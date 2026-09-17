@@ -137,17 +137,32 @@ class Orchestrator:
         """
         Runs the simulation until a victory condition is met or max_turns is reached.
         """
-        # 1. Load long-term knowledge
+        # 1. Establish persistent connection
+        try:
+            self.red_agent.executor.connect()
+        except Exception as e:
+            print(f"Failed to establish initial connection: {e}")
+            return None
+
+        # 2. Load long-term knowledge
         knowledge = self._load_knowledge()
         self.red_agent.experience = knowledge.get("red", [])
         self.blue_agent.experience = knowledge.get("blue", [])
 
-        for _ in range(max_turns):
-            winner = self.step()
-            if winner:
-                break
+        try:
+            for _ in range(max_turns):
+                winner = self.step()
+                if winner:
+                    break
 
-        # 2. Learn from the battle
+                # Incremental learning: Save state every turn as a backup
+                # (Actual lesson summarization happens at the end,
+                # but we could add intermediate checkpoints here if desired)
+        finally:
+            # 3. Always disconnect
+            self.red_agent.executor.disconnect()
+
+        # 4. Learn from the battle
         print("\nSimulation ended. Agents are now reflecting on the battle...")
         red_lesson = self.red_agent.summarize_experience(self.state.history)
         blue_lesson = self.blue_agent.summarize_experience(self.state.history)
@@ -159,13 +174,14 @@ class Orchestrator:
             knowledge["blue"].append(blue_lesson)
             print(f"Blue learned: {blue_lesson}")
 
-        # 3. Save updated knowledge
+        # 5. Save updated knowledge
         self._save_knowledge(knowledge)
 
         # Return the winner (if any)
         if self.state.red_captured_flag: return "red"
         if self.state.blue_victory: return "blue"
         return None
+
 
 
     def generate_report(self) -> str:

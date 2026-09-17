@@ -1,4 +1,5 @@
 import ollama
+from ollama import Client
 from typing import Union, Dict, Any, List, Optional
 from src.executor import ToolExecutor
 
@@ -28,7 +29,8 @@ class Agent:
         self.model = model
         self.experience = experience or []
         self.system_prompt = RED_SYSTEM_PROMPT if role.lower() == "red" else BLUE_SYSTEM_PROMPT
-
+        # Initialize Ollama client with a specific timeout for stability
+        self.client = Client(timeout=30.0)
 
         # Define the tools available to the agent
         self.tools = [
@@ -65,12 +67,14 @@ class Agent:
             {'role': 'user', 'content': state},
         ]
 
-
-        response = ollama.chat(
-            model=self.model,
-            messages=messages,
-            tools=self.tools,
-        )
+        try:
+            response = self.client.chat(
+                model=self.model,
+                messages=messages,
+                tools=self.tools,
+            )
+        except Exception as e:
+            return f"LLM Error: {str(e)}"
 
         message = response['message']
 
@@ -118,7 +122,7 @@ class Agent:
         prompt = f"Analyze this battle history:\n\n{history_str}\n\nWhat is the single most important lesson learned from this simulation that you should remember for next time? Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
 
         try:
-            response = ollama.chat(
+            response = self.client.chat(
                 model=self.model,
                 messages=[{'role': 'user', 'content': prompt}]
             )
@@ -126,4 +130,3 @@ class Agent:
         except Exception as e:
             print(f"Error summarizing experience: {e}")
             return None
-
