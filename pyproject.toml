@@ -1,0 +1,12 @@
+[project]
+name = "purpleloop"
+version = "0.1.0"
+dependencies = [
+    "ollama",
+    "paramiko",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "pytest",
+    "requests",
+]

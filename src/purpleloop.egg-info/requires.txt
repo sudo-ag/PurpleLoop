@@ -1,0 +1,6 @@
+ollama
+paramiko
+fastapi
+uvicorn
+jinja2
+pytest

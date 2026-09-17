@@ -1,0 +1,7 @@
+pyproject.toml
+src/__init__.py
+src/purpleloop.egg-info/PKG-INFO
+src/purpleloop.egg-info/SOURCES.txt
+src/purpleloop.egg-info/dependency_links.txt
+src/purpleloop.egg-info/requires.txt
+src/purpleloop.egg-info/top_level.txt

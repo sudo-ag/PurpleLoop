@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: purpleloop
+Version: 0.1.0
+Requires-Dist: ollama
+Requires-Dist: paramiko
+Requires-Dist: fastapi
+Requires-Dist: uvicorn
+Requires-Dist: jinja2
+Requires-Dist: pytest
