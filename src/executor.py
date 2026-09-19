@@ -30,7 +30,7 @@ class ToolExecutor:
         "/etc/passwd"
     ]
 
-    def __init__(self, host: str, user: str, pwd: str, timeout: int = 10):
+    def __init__(self, host: str, user: str, pwd: str, timeout: int = 60):
         self.host = host
         self.user = user
         self.pwd = pwd
@@ -224,14 +224,25 @@ class ToolExecutor:
     # Parsers — turn raw command output into structured signals
     # ------------------------------------------------------------------
 
-    def _parse_auth_log(self, raw: str) -> str:
+    def _parse_auth_log(self, raw: str) -> Dict[str, Any]:
         if not raw or raw.strip() in ("", "true"):
-            return json.dumps({
+            return {
                 "tool": "investigate_logs",
                 "log_type": "auth",
                 "error": "No auth.log available",
                 "events": [],
-            }, indent=2)
+                "failed_auth_count": 0,
+                "successful_logins": 0,
+                "sudo_commands": 0,
+                "flag_access_detected": False,
+                "suspicious_events": 0,
+                "critical_events": 0,
+                "suspicious_ips": [],
+                "suspicious_users": [],
+                "summary": "No auth.log available.",
+                "assessment": "CLEAN",
+                "recommendation": "Monitor for suspicious activity.",
+            }
 
         events = []
         failed_count = 0
@@ -343,7 +354,6 @@ class ToolExecutor:
             "assessment": assessment,
             "recommendation": recommendation,
         }
-        return findings
 
     def _parse_syslog(self, raw: str) -> Dict[str, Any]:
         if not raw or raw.strip() in ("", "true"):
@@ -407,7 +417,7 @@ class ToolExecutor:
             else "Review sudo activity."
         )
 
-        return json.dumps({
+        return {
             "tool": "investigate_logs",
             "log_type": "syslog",
             "total_events": len(raw.splitlines()),
@@ -420,15 +430,22 @@ class ToolExecutor:
             "summary": summary,
             "assessment": assessment,
             "recommendation": recommendation,
-        }, indent=2)
+        }
 
-    def _parse_ps(self, raw: str) -> str:
+    def _parse_ps(self, raw: str) -> Dict[str, Any]:
         if not raw or raw.strip() in ("", "true"):
-            return json.dumps({
+            return {
                 "tool": "investigate_processes",
                 "error": "No process list available",
                 "processes": [],
-            }, indent=2)
+                "suspicious_processes": [],
+                "critical_processes": [],
+                "suspicious_count": 0,
+                "critical_count": 0,
+                "summary": "No process list available.",
+                "assessment": "CLEAN",
+                "recommendation": "Investigate any suspicious processes.",
+            }
 
         processes = []
         suspicious = []
@@ -446,8 +463,30 @@ class ToolExecutor:
         suspicious_count = len(suspicious)
         critical_count = len(critical)
 
+        # Trim to a manageable size: all suspicious + top 10 by CPU
+        shown_processes = suspicious + [
+            p for p in processes if not p.get("suspicious")
+        ]
+        shown_processes.sort(key=lambda p: float(p.get("cpu", "0") or "0"), reverse=True)
+        if len(shown_processes) > 10 + suspicious_count:
+            shown_processes = shown_processes[: 10 + suspicious_count]
+
+        # Trim each process to the fields the model needs
+        trimmed = []
+        for p in shown_processes:
+            trimmed.append({
+                "pid": p.get("pid"),
+                "user": p.get("user"),
+                "cpu": p.get("cpu"),
+                "mem": p.get("mem"),
+                "command": p.get("command"),
+                "suspicious": p.get("suspicious", False),
+                "critical": p.get("critical", False),
+                "reasons": p.get("reasons", []),
+            })
+
         summary = (
-            f"Processes: {len(processes)} total. "
+            f"Processes: {len(processes)} total (showing top 10 + suspicious). "
             f"Suspicious: {suspicious_count}, Critical: {critical_count}."
         )
         if critical:
@@ -457,14 +496,37 @@ class ToolExecutor:
         else:
             summary += " No obvious suspicious processes."
 
-        all_suspicious = suspicious + critical
-
-        return json.dumps({
+        return {
             "tool": "investigate_processes",
             "total_processes": len(processes),
-            "processes": processes,
-            "suspicious_processes": all_suspicious,
-            "critical_processes": critical,
+            "shown_count": len(trimmed),
+            "processes": trimmed,
+            "suspicious_processes": [
+                {
+                    "pid": p.get("pid"),
+                    "user": p.get("user"),
+                    "cpu": p.get("cpu"),
+                    "mem": p.get("mem"),
+                    "command": p.get("command"),
+                    "suspicious": p.get("suspicious", False),
+                    "critical": p.get("critical", False),
+                    "reasons": p.get("reasons", []),
+                }
+                for p in suspicious
+            ],
+            "critical_processes": [
+                {
+                    "pid": p.get("pid"),
+                    "user": p.get("user"),
+                    "cpu": p.get("cpu"),
+                    "mem": p.get("mem"),
+                    "command": p.get("command"),
+                    "suspicious": p.get("suspicious", False),
+                    "critical": p.get("critical", False),
+                    "reasons": p.get("reasons", []),
+                }
+                for p in critical
+            ],
             "suspicious_count": suspicious_count,
             "critical_count": critical_count,
             "summary": summary,
@@ -479,16 +541,22 @@ class ToolExecutor:
                 if critical_count > 0
                 else "Investigate any suspicious processes."
             ),
-        }, indent=2)
+        }
 
-    def _parse_network(self, raw: str) -> str:
+    def _parse_network(self, raw: str) -> Dict[str, Any]:
         if not raw or raw.strip() in ("", "true"):
-            return json.dumps({
+            return {
                 "tool": "investigate_network",
                 "error": "No network data available",
                 "listeners": [],
                 "connections": [],
-            }, indent=2)
+                "suspicious_listeners": [],
+                "suspicious_count": 0,
+                "critical_count": 0,
+                "summary": "No network data available.",
+                "assessment": "CLEAN",
+                "recommendation": "No obvious network anomalies.",
+            }
 
         listeners = []
         connections = []
@@ -520,10 +588,10 @@ class ToolExecutor:
         if not listeners and not connections:
             summary += " No network data."
 
-        return json.dumps({
+        return {
             "tool": "investigate_network",
-            "listeners": listeners,
-            "connections": connections,
+            "listeners": listeners[:50],
+            "connections": connections[:50],
             "suspicious_listeners": suspicious_listeners,
             "suspicious_count": suspicious_count,
             "critical_count": critical_count,
@@ -537,7 +605,7 @@ class ToolExecutor:
                 if suspicious_count > 0
                 else "No obvious network anomalies."
             ),
-        }, indent=2)
+        }
 
     def _parse_file_access(
         self,
@@ -545,7 +613,7 @@ class ToolExecutor:
         stat_raw: str,
         ls_raw: str,
         filepath: str,
-    ) -> str:
+    ) -> Dict[str, Any]:
         findings: Dict[str, Any] = {
             "tool": "investigate_file_access",
             "filepath": filepath,

@@ -125,7 +125,7 @@ class Agent:
         self.experience = experience or []
         self.system_prompt = RED_SYSTEM_PROMPT if role.lower() == "red" else BLUE_SYSTEM_PROMPT
         # Initialize Ollama client with a specific timeout for stability
-        self.client = Client(timeout=30.0)
+        self.client = Client(timeout=120.0)
 
         # Define the tools available to the agent — blue and red have DIFFERENT tools
         if role.lower() == "blue":
