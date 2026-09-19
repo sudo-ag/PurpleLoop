@@ -14,6 +14,7 @@ class SimulationState:
     blue_victory: bool = False
     current_agent_role: str = "red"
     red_stalled_turns: int = 0
+    red_failed_turns: int = 0   # turns where red made tool calls but none succeeded (output contains error/permission/no such/file not found)
 
 class Orchestrator:
     def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json"):
@@ -61,6 +62,35 @@ class Orchestrator:
         # or if it's the result of reading flag_path.
         if "FLAG{" in output:
             return True
+        return False
+
+    # Error indicators that mean a red tool call produced no usable result
+    # (permission denied, missing paths, bad syntax, etc.) rather than a
+    # useful reconnaissance result the red agent can act on.
+    _RED_ERROR_PATTERNS = (
+        "permission denied",
+        "no such file",
+        "no such directory",
+        "cannot open",
+        "cannot access",
+        "command not found",
+        "not found",
+        "error:",
+        "error ",
+        "usage:",
+        "option requires",
+        "invalid",
+        "failed",
+        "denied",
+        "exit status",
+    )
+
+    def _is_error_output(self, output: str) -> bool:
+        """Return True when a command's output is clearly an error / non-actionable."""
+        lowered = output.lower()
+        for pattern in self._RED_ERROR_PATTERNS:
+            if pattern in lowered:
+                return True
         return False
 
     def step(self) -> Optional[str]:
@@ -113,16 +143,37 @@ class Orchestrator:
                 if tools_called >= self.max_tools_per_turn:
                     break
 
-        # Update stall status for Red
+        # Update Red's performance status for this turn.
+        # Red is "stalled" when they made no tool calls this turn.
+        # Red is "failing" when they made tool calls but every one produced
+        # an error / non-actionable output (permission denied, missing paths,
+        # bad syntax, etc.) with no useful reconnaissance result.
         if role == "red":
-            # Red is considered stalled if they didn't make any tool calls or didn't change their behavior
-            # For simplicity, if they didn't call any tools, they are stalled
             if tools_called == 0:
                 self.state.red_stalled_turns += 1
             else:
                 self.state.red_stalled_turns = 0
 
-        if self.state.red_stalled_turns >= self.stall_limit:
+            # A "failed turn" = at least one tool call and every tool call's
+            # output is an error (per _is_error_output). Useful output resets it.
+            had_useful_output = False
+            for entry in self.state.history[-tools_called:]:
+                out = entry.get("output", "")
+                if isinstance(out, str) and out.strip() and not self._is_error_output(out):
+                    had_useful_output = True
+                    break
+            if tools_called > 0 and not had_useful_output:
+                self.state.red_failed_turns += 1
+            else:
+                self.state.red_failed_turns = 0
+
+        # Blue victory conditions (two ways to win):
+        # 1. Red is stalled (no tool calls) for stall_limit consecutive turns.
+        # 2. Red is failing — repeatedly making tool calls that all produce
+        #    errors / non-actionable output — for fail_limit consecutive turns.
+        #    This models blue having effectively contained / denied red's activity.
+        if self.state.red_stalled_turns >= self.stall_limit or \
+           self.state.red_failed_turns >= self.stall_limit:
             self.state.blue_victory = True
             self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": "blue"})
             return "blue"
@@ -133,16 +184,20 @@ class Orchestrator:
 
         return None
 
+    def _executor_supports(self, name: str) -> bool:
+        return hasattr(self.red_agent.executor, name) and callable(getattr(self.red_agent.executor, name))
+
     def run_simulation(self, max_turns: int = 20) -> Optional[str]:
         """
         Runs the simulation until a victory condition is met or max_turns is reached.
         """
-        # 1. Establish persistent connection
-        try:
-            self.red_agent.executor.connect()
-        except Exception as e:
-            print(f"Failed to establish initial connection: {e}")
-            return None
+        # 1. Establish persistent connection (best-effort; a stateless executor can skip this)
+        if self._executor_supports("connect"):
+            try:
+                self.red_agent.executor.connect()
+            except Exception as e:
+                print(f"Failed to establish initial connection: {e}")
+                # Non-fatal for the sim — fall back to per-call reconnect behavior in the executor.
 
         # 2. Load long-term knowledge
         knowledge = self._load_knowledge()
@@ -159,13 +214,19 @@ class Orchestrator:
                 # (Actual lesson summarization happens at the end,
                 # but we could add intermediate checkpoints here if desired)
         finally:
-            # 3. Always disconnect
-            self.red_agent.executor.disconnect()
+            # 3. Always disconnect (best-effort)
+            if self._executor_supports("disconnect"):
+                try:
+                    self.red_agent.executor.disconnect()
+                except Exception as e:
+                    print(f"Warning: executor disconnect failed: {e}")
 
         # 4. Learn from the battle
         print("\nSimulation ended. Agents are now reflecting on the battle...")
-        red_lesson = self.red_agent.summarize_experience(self.state.history)
-        blue_lesson = self.blue_agent.summarize_experience(self.state.history)
+        red_history = [h for h in self.state.history if h.get("role") == "red"]
+        blue_history = [h for h in self.state.history if h.get("role") == "blue"]
+        red_lesson = self.red_agent.summarize_experience(red_history)
+        blue_lesson = self.blue_agent.summarize_experience(blue_history)
 
         if red_lesson:
             knowledge["red"].append(red_lesson)

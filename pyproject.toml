@@ -1,6 +1,13 @@
 [project]
 name = "purpleloop"
 version = "0.1.0"
+
+[project.scripts]
+start  = "python -m src.ops start"
+status = "python -m src.ops status"
+report = "python -m src.ops report"
+watch  = "python -m src.ops watch"
+
 dependencies = [
     "ollama",
     "paramiko",

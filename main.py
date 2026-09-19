@@ -9,9 +9,10 @@ from src.mock_executor import MockExecutor
 from src.agents import Agent
 from src.orchestrator import Orchestrator
 
-def run_dashboard():
-    # Use a different port if 8000 is taken
-    uvicorn.run(dashboard_app, host="0.0.0.0", port=8000, log_level="error")
+def run_dashboard() -> None:
+    port = int(os.environ.get("DASHBOARD_PORT", os.environ.get("PORT", "8000")))
+    host = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
+    uvicorn.run(dashboard_app, host=host, port=port, log_level="error")
 
 def main():
     # Credentials - defaults for Metasploitable 3
@@ -22,12 +23,13 @@ def main():
 
     print(f"Starting simulation against {host} as {user} using model {model}...")
 
-    # Start Dashboard in a separate process
-    dashboard_process = multiprocessing.Process(target=run_dashboard, daemon=True)
-    dashboard_process.start()
-
-    # Give dashboard a moment to start
-    time.sleep(2)
+    dashboard_process = None
+    if not os.getenv("DISABLE_DASHBOARD"):
+        # Start Dashboard in a separate process
+        dashboard_process = multiprocessing.Process(target=run_dashboard, daemon=True)
+        dashboard_process.start()
+        # Give dashboard a moment to start
+        time.sleep(2)
 
     try:
         # Initialize Executor
@@ -41,14 +43,15 @@ def main():
         blue = Agent(role="blue", executor=executor, model=model)
 
         # Initialize Orchestrator
+        dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8000")
         orchestrator = Orchestrator(
             red_agent=red,
             blue_agent=blue,
-            dashboard_url="http://localhost:8000"
+            dashboard_url=dashboard_url,
         )
 
         # Run Simulation
-        print("Simulation started. Check http://localhost:8000 for live updates.")
+        print(f"Simulation started. Check {dashboard_url} for live updates.")
         winner = orchestrator.run_simulation(max_turns=20)
 
         # Save the battle report
@@ -67,8 +70,9 @@ def main():
         print(f"Simulation failed: {e}")
     finally:
         # Clean up
-        dashboard_process.terminate()
-        dashboard_process.join()
+        if dashboard_process:
+            dashboard_process.terminate()
+            dashboard_process.join()
 
 if __name__ == "__main__":
     main()

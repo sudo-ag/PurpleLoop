@@ -2,12 +2,20 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, Any, Optional
 import uvicorn
 import json
+import os
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
+
+# Pull-state snapshot: last turn_update plus a capped event log.
+# Written by /update (push from the orchestrator); read by /state (poll from Hermes/CLI).
+_dashboard_latest: Dict[str, Any] = {}
+_dashboard_log: List[Dict[str, Any]] = []
+MAX_EVENT_LOG = 80
+
 
 class ConnectionManager:
     def __init__(self):
@@ -38,7 +46,29 @@ class Update(BaseModel):
 async def update_dashboard(update: Update):
     # Broadcast the update to all connected WS clients
     await manager.broadcast(json.dumps(update.dict()))
+
+    # Keep a pollable snapshot + capped event log for CLI / Hermes / headless consumers
+    global _dashboard_latest, _dashboard_log
+    _dashboard_latest["event_type"] = update.event_type
+    _dashboard_latest["data"] = update.data
+    _dashboard_log.append(dict(_dashboard_latest))
+    if len(_dashboard_log) > MAX_EVENT_LOG:
+        _dashboard_log = _dashboard_log[-MAX_EVENT_LOG:]
+
     return {"status": "ok"}
+
+
+@app.get("/state")
+async def get_state() -> Dict[str, Any]:
+    """
+    Pollable snapshot of the last turn update plus the recent event log.
+    For Hermes and headless consumers — no WebSocket required.
+    """
+    return {
+        "latest": dict(_dashboard_latest),
+        "event_log": list(_dashboard_log),
+        "history_len": len(_dashboard_log),
+    }
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
