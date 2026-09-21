@@ -118,14 +118,14 @@ RULES:
 
 
 class Agent:
-    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.1", experience: List[str] = None):
+    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None):
         self.role = role
         self.executor = executor
         self.model = model
         self.experience = experience or []
         self.system_prompt = RED_SYSTEM_PROMPT if role.lower() == "red" else BLUE_SYSTEM_PROMPT
         # Initialize Ollama client with a specific timeout for stability
-        self.client = Client(timeout=120.0)
+        self.client = Client(timeout=600.0)
 
         # Define the tools available to the agent — blue and red have DIFFERENT tools
         if role.lower() == "blue":
