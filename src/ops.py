@@ -1,24 +1,21 @@
 """
 Purpleloop operations — start / watch / report.
 
-Hermes session running inside the purpleloop repo uses this module
-(or the shell equivalents it documents in .hermes.md) to drive the
-simulation rather than composing curl + subprocess by hand.
+Hermes uses this module as the primary runtime entrypoint. `main.py` still
+owns the simulation itself, but `src.ops` prepares the environment, launches
+the process, watches progress, and reads the final report.
 
-There is no "stop" verb here: the orchestrator owns the dashboard
-process lifecycle (multiprocessing in main.py), so stopping is
-"wait for it to end and read battle_report.md", or restarting with
-different env vars. Killing the dashboard manually leaves the
-simulation in a broken state.
+The dashboard is disabled by default. Pass dashboard=True or `--dashboard`
+when the FastAPI UI is needed; otherwise watch progress through
+`simulation.log` and `battle_report.md`.
 
-Quick shell equivalents (for one-off use):
-  uv run start_mock                     # background mock sim; prints 'visiting http://localhost:8000'
-  uv run status                         # curl localhost:8000/state
-  uv run report                         # read battle_report.md if it exists
+Quick shell equivalents:
+  uv run python -m src.ops start --host mock
+  uv run python -m src.ops run --host mock --max-minutes 30
+  uv run python -m src.ops report
 
-Usage from Hermes (natural language maps to these functions):
-  "start a mock simulation"             -> start_simulation(MOCK_HOST)
-  "check the simulation status"         -> get_state()
+Usage from Hermes:
+  "start a mock simulation"             -> start_simulation(host=MOCK_HOST)
   "read the latest battle report"       -> read_report()
   "watch until the sim ends, then read the report"
                                         -> watch_until_done(max_wait_minutes=..., interval_s=...)
@@ -64,6 +61,7 @@ def start_simulation(
     max_turns: int = 20,
     dashboard_url: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
+    dashboard: bool = False,
     background: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -87,14 +85,17 @@ def start_simulation(
         else:
             _dashboard_host = rest
 
-    env = dict(os.environ)
-    env["TARGET_HOST"] = host
-    env["TARGET_USER"] = user
-    env["TARGET_PWD"] = pwd
-    env["MODEL"] = model
-    env["DASHBOARD_URL"] = url
-    env["DASHBOARD_HOST"] = _dashboard_host
-    env["DASHBOARD_PORT"] = _dashboard_port
+    child_env = dict(os.environ)
+    if env:
+        child_env.update(env)
+    child_env["TARGET_HOST"] = host
+    child_env["TARGET_USER"] = user
+    child_env["TARGET_PWD"] = pwd
+    child_env["MODEL"] = model
+    child_env["DASHBOARD_URL"] = url
+    child_env["DASHBOARD_HOST"] = _dashboard_host
+    child_env["DASHBOARD_PORT"] = _dashboard_port
+    child_env["DISABLE_DASHBOARD"] = "0" if dashboard else "1"
 
     python = os.environ.get("VIRTUAL_ENV")
     if python:
@@ -110,6 +111,7 @@ def start_simulation(
         "model": model,
         "cmd": " ".join(cmd),
         "dashboard_url": url,
+        "dashboard_enabled": dashboard,
         "background": background,
     }
 
@@ -120,23 +122,24 @@ def start_simulation(
         proc = subprocess.Popen(
             cmd,
             cwd=str(REPO),
-            env=env,
+            env=child_env,
             stdout=open(log_path, "a"),
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
         info["pid"] = proc.pid
         info["log"] = str(log_path)
-        # Give the dashboard a moment to come up
-        for _ in range(10):
-            try:
-                _session().get(url + "/state", timeout=1.0)
-                break
-            except Exception:
-                time.sleep(0.5)
+        if dashboard:
+            # Give the dashboard a moment to come up
+            for _ in range(10):
+                try:
+                    _session().get(url + "/state", timeout=1.0)
+                    break
+                except Exception:
+                    time.sleep(0.5)
         return info
     else:
-        proc = subprocess.run(cmd, cwd=str(REPO), env=env)
+        proc = subprocess.run(cmd, cwd=str(REPO), env=child_env)
         info["exit_code"] = proc.returncode
         return info
 
@@ -184,7 +187,7 @@ REPORT_PATH = REPO / "battle_report.md"
 
 def _dashboard_disabled() -> bool:
     """True when the simulation was started without a dashboard (DISABLE_DASHBOARD=1)."""
-    return os.getenv("DISABLE_DASHBOARD") == "1"
+    return os.getenv("DISABLE_DASHBOARD", "1").lower() in ("1", "true", "yes", "on")
 
 
 def report_exists() -> bool:
@@ -245,6 +248,7 @@ def watch_until_done(
     max_wait_minutes: float = 20.0,
     interval_s: float = 5.0,
     url: Optional[str] = None,
+    dashboard: Optional[bool] = None,
     log: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -252,7 +256,8 @@ def watch_until_done(
     disabled) until the simulation reports a winner or the timeout passes.
     Returns the final state snapshot and, if available, the battle report text.
     """
-    if _dashboard_disabled():
+    dashboard_enabled = not _dashboard_disabled() if dashboard is None else dashboard
+    if not dashboard_enabled:
         return _watch_without_dashboard(max_wait_minutes, interval_s, log)
 
     u = url or DASHBOARD_URL
@@ -302,6 +307,8 @@ def watch_until_done(
 
 
 def _winner_from_state(state: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(state, dict):
+        return None
     data = (state.get("latest") or {}).get("data", {})
     return data.get("winner")
 
@@ -321,12 +328,14 @@ if __name__ == "__main__":
     p_start.add_argument("--model", default=DEFAULT_MODEL)
     p_start.add_argument("--user", default="vagrant")
     p_start.add_argument("--pwd", default="vagrant")
+    p_start.add_argument("--dashboard", action="store_true", help="Enable the FastAPI dashboard")
 
-    p_status = sub.add_parser("status", help="Poll /state once")
+    p_status = sub.add_parser("status", help="Poll dashboard /state once when UI is enabled")
     p_report = sub.add_parser("report", help="Read battle_report.md")
     p_watch = sub.add_parser("watch", help="Poll until the sim ends or times out")
     p_watch.add_argument("--max-minutes", type=float, default=20.0)
     p_watch.add_argument("--interval", type=float, default=5.0)
+    p_watch.add_argument("--dashboard", action="store_true", help="Poll the FastAPI dashboard instead of simulation.log")
 
     p_run = sub.add_parser("run", help="Start a simulation and watch it to completion in one shot")
     p_run.add_argument("--host", default=MOCK_HOST)
@@ -335,11 +344,12 @@ if __name__ == "__main__":
     p_run.add_argument("--pwd", default="vagrant")
     p_run.add_argument("--max-minutes", type=float, default=20.0)
     p_run.add_argument("--interval", type=float, default=2.0)
+    p_run.add_argument("--dashboard", action="store_true", help="Enable and watch the FastAPI dashboard")
 
     args = parser.parse_args()
 
     if args.cmd == "start":
-        info = start_simulation(args.host, args.model, args.user, args.pwd)
+        info = start_simulation(args.host, args.model, args.user, args.pwd, dashboard=args.dashboard)
         print(json.dumps(info, indent=2))
     elif args.cmd == "status":
         state = get_state_or_none()
@@ -355,7 +365,7 @@ if __name__ == "__main__":
     elif args.cmd == "report":
         print(read_report())
     elif args.cmd == "watch":
-        out = watch_until_done(args.max_minutes, args.interval)
+        out = watch_until_done(args.max_minutes, args.interval, dashboard=args.dashboard)
         print("--- final state ---")
         print(json.dumps(out["state"], indent=2))
         if out["report"]:
@@ -364,9 +374,9 @@ if __name__ == "__main__":
         print("--- winner ---")
         print(out["winner"] or "none")
     elif args.cmd == "run":
-        info = start_simulation(args.host, args.model, args.user, args.pwd)
+        info = start_simulation(args.host, args.model, args.user, args.pwd, dashboard=args.dashboard)
         print(json.dumps(info, indent=2))
-        out = watch_until_done(args.max_minutes, args.interval)
+        out = watch_until_done(args.max_minutes, args.interval, dashboard=info["dashboard_enabled"])
         print("--- final state ---")
         print(json.dumps(out["state"], indent=2))
         if out["report"]:

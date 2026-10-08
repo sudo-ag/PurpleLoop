@@ -14,7 +14,12 @@ def run_dashboard() -> None:
     host = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
     uvicorn.run(dashboard_app, host=host, port=port, log_level="error")
 
-def main():
+def dashboard_enabled() -> bool:
+    if os.getenv("ENABLE_DASHBOARD") == "1":
+        return True
+    return os.getenv("DISABLE_DASHBOARD", "1").lower() not in ("1", "true", "yes", "on")
+
+def main() -> None:
     # Credentials - defaults for Metasploitable 3
     host = os.getenv("TARGET_HOST", "192.168.64.10")
     user = os.getenv("TARGET_USER", "vagrant")
@@ -24,7 +29,8 @@ def main():
     print(f"Starting simulation against {host} as {user} using model {model}...")
 
     dashboard_process = None
-    if not os.getenv("DISABLE_DASHBOARD"):
+    use_dashboard = dashboard_enabled()
+    if use_dashboard:
         # Start Dashboard in a separate process
         dashboard_process = multiprocessing.Process(target=run_dashboard, daemon=True)
         dashboard_process.start()
@@ -43,7 +49,7 @@ def main():
         blue = Agent(role="blue", executor=executor, model=model)
 
         # Initialize Orchestrator
-        dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8000")
+        dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8000") if use_dashboard else None
         orchestrator = Orchestrator(
             red_agent=red,
             blue_agent=blue,
@@ -51,7 +57,10 @@ def main():
         )
 
         # Run Simulation
-        print(f"Simulation started. Check {dashboard_url} for live updates.")
+        if dashboard_url:
+            print(f"Simulation started. Check {dashboard_url} for live updates.")
+        else:
+            print("Simulation started. Dashboard disabled.")
         winner = orchestrator.run_simulation(max_turns=20)
 
         # Save the battle report
