@@ -16,15 +16,24 @@ _RED_PHASE_GUIDANCE = {
         "Next objective: locate flag.txt. Use `find / -maxdepth 4 -name flag.txt "
         "-print 2>/dev/null` or check common dirs. Do not repeat whoami/id."
     ),
-    "flag_read": (
-        "Next objective: read the discovered flag path. Try `cat <path>`; if denied, "
-        "try `sudo cat <path>`."
-    ),
     "privilege_check": (
         "Next objective: get a usable privilege path. Try `sudo -n -l`, then SUID "
         "and cron checks if sudo is unavailable."
     ),
 }
+
+# Blue steers through its investigation tools in this order. The first two are
+# the only tools that surface flag-file access (the breach signal), so they
+# lead; the rest give context. Blue is nudged toward the first tool it has not
+# run yet, which stops the 3B model from repeating one tool every turn.
+_BLUE_TOOL_PRIORITY = [
+    "investigate_logs",
+    "investigate_file_access",
+    "investigate_processes",
+    "investigate_users",
+    "investigate_cron",
+    "investigate_network",
+]
 
 
 @dataclass
@@ -188,12 +197,25 @@ class Orchestrator:
                         seen.add(path)
         return paths
 
+    def _root_available(self) -> bool:
+        """True once red has confirmed a passwordless-root path from sudo -l.
+
+        Metasploitable3's vagrant user carries `(ALL : ALL) NOPASSWD: ALL`, so
+        the moment that shows up red can read the flag directly with sudo — it
+        does not need `find` to succeed first.
+        """
+        for entry in self._red_tool_history():
+            output = str(entry.get("output", "")).lower()
+            if "nopasswd" in output or "(all" in output:
+                return True
+        return False
+
     def _update_red_phase(self) -> None:
         commands = self._red_commands()
         outputs = [str(entry.get("output", "")) for entry in self._red_tool_history()]
         combined = "\n".join(commands + outputs).lower()
 
-        if self._discovered_flag_paths():
+        if self._discovered_flag_paths() or self._root_available():
             self.state.red_phase = "flag_read"
             return
         if "permission denied" in combined or "sudo -l" in combined or "sudo -n -l" in combined:
@@ -209,11 +231,60 @@ class Orchestrator:
 
     def _red_phase_guidance(self) -> str:
         self._update_red_phase()
-        guidance = _RED_PHASE_GUIDANCE[self.state.red_phase]
-        flag_paths = self._discovered_flag_paths()
-        if flag_paths and self.state.red_phase == "flag_read":
-            guidance += f" Discovered path(s): {', '.join(flag_paths)}."
-        return f"Red Phase: {self.state.red_phase}. {guidance}"
+        phase = self.state.red_phase
+        if phase == "flag_read":
+            return f"Red Phase: {phase}. {self._flag_read_guidance()}"
+        return f"Red Phase: {phase}. {_RED_PHASE_GUIDANCE[phase]}"
+
+    def _flag_read_guidance(self) -> str:
+        paths = self._discovered_flag_paths()
+        target = paths[0] if paths else self.flag_path
+        if self._root_available():
+            guidance = (
+                f"Next objective: you have confirmed passwordless root. READ THE FLAG "
+                f"NOW with `sudo cat {target}`. Stop enumerating — one command wins."
+            )
+        else:
+            guidance = (
+                f"Next objective: read the flag at {target}. Try `cat {target}`; if "
+                f"permission denied, try `sudo cat {target}`."
+            )
+        if paths:
+            guidance += f" Discovered path(s): {', '.join(paths)}."
+        return guidance
+
+    def _blue_tools_used(self) -> List[str]:
+        used = []
+        for entry in self.state.history:
+            if entry.get("role") != "blue" or "tool" not in entry:
+                continue
+            name = entry.get("tool", {}).get("function", {}).get("name", "")
+            if name:
+                used.append(name)
+        return used
+
+    def _blue_tool_guidance(self) -> str:
+        used = self._blue_tools_used()
+        used_set = set(used)
+        next_tool = next((t for t in _BLUE_TOOL_PRIORITY if t not in used_set), None)
+        guidance = (
+            "You are the blue defender. Vary your investigation — do not repeat a "
+            "tool you have already run this battle."
+        )
+        if next_tool:
+            guidance += (
+                f" Call `{next_tool}` next. `investigate_logs` and "
+                f"`investigate_file_access` are the only tools that reveal flag-file "
+                f"access, so reach them early to confirm a breach."
+            )
+        else:
+            guidance += (
+                " You have run every investigation tool. If any returned a BREACH or "
+                "flag_access_detected, write your final incident report now."
+            )
+        if used:
+            guidance += f" Already run: {', '.join(dict.fromkeys(used))}."
+        return f"Blue guidance: {guidance}"
 
     def _build_state_summary(self, role: str) -> str:
         state_summary = (
@@ -222,6 +293,8 @@ class Orchestrator:
         )
         if role == "red":
             state_summary += f"\n{self._red_phase_guidance()}"
+        elif role == "blue":
+            state_summary += f"\n{self._blue_tool_guidance()}"
         return state_summary
 
     def step(self) -> Optional[str]:

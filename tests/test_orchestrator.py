@@ -225,8 +225,72 @@ def test_red_phase_advances_to_flag_read_after_finding_flag_path():
     summary = orch._build_state_summary("red")
 
     assert "Red Phase: flag_read" in summary
-    assert "try `sudo cat <path>`" in summary
+    assert "sudo cat /root/flag.txt" in summary
     assert "Discovered path(s): /root/flag.txt" in summary
+
+
+def test_red_phase_jumps_to_flag_read_on_confirmed_root():
+    # The exact failure from the live run: red confirmed NOPASSWD root via
+    # sudo -l but find never surfaced a path. It must still move to flag_read
+    # and be told to `sudo cat` the known flag path instead of re-enumerating.
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [
+        {
+            "role": "red",
+            "tool": {"function": {"name": "execute_command", "arguments": {"command": "sudo -n -l"}}},
+            "output": "User vagrant may run the following commands on ubuntu:\n    (ALL : ALL) NOPASSWD: ALL",
+        },
+    ]
+
+    summary = orch._build_state_summary("red")
+
+    assert "Red Phase: flag_read" in summary
+    assert "sudo cat /root/flag.txt" in summary
+    assert "passwordless root" in summary
+
+
+def test_blue_guidance_steers_to_first_unused_tool():
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [
+        {
+            "role": "blue",
+            "tool": {"function": {"name": "investigate_processes", "arguments": {}}},
+            "output": "{}",
+        },
+    ]
+
+    summary = orch._build_state_summary("blue")
+
+    # investigate_processes is used, so blue is pushed to the highest-priority
+    # unused tool — investigate_logs, which carries the breach signal.
+    assert "Blue guidance:" in summary
+    assert "`investigate_logs`" in summary
+    assert "Already run: investigate_processes" in summary
+
+
+def test_blue_guidance_when_all_tools_exhausted():
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [
+        {"role": "blue", "tool": {"function": {"name": name, "arguments": {}}}, "output": "{}"}
+        for name in (
+            "investigate_logs",
+            "investigate_file_access",
+            "investigate_processes",
+            "investigate_users",
+            "investigate_cron",
+            "investigate_network",
+        )
+    ]
+
+    summary = orch._build_state_summary("blue")
+
+    assert "run every investigation tool" in summary
 
 def test_blue_suspicious_processes_do_not_confirm_victory():
     red_agent = MagicMock(spec=Agent)
