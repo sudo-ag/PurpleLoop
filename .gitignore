@@ -6,3 +6,18 @@ __pycache__/
 simulation.log
 battle_report.md
 knowledge.json
+
+# Vagrant / Metasploitable3 target VM (6+ GB, provisioned locally, never committed)
+.vagrant/
+metasploitable3-arm/
+*.box
+*.qcow2
+*.vmdk
+*.ovf
+
+# Build artifacts
+build/
+
+# Scratch / experimental scripts
+tools_call.py
+src/_e2e_mock.py
