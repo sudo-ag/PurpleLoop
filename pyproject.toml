@@ -1,6 +1,14 @@
 [project]
 name = "purpleloop"
 version = "0.1.0"
+dependencies = [
+    "ollama",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "pytest",
+    "requests",
+]
 
 [project.scripts]
 start  = "python -m src.ops start"
@@ -8,12 +16,8 @@ status = "python -m src.ops status"
 report = "python -m src.ops report"
 watch  = "python -m src.ops watch"
 
-dependencies = [
-    "ollama",
-    "paramiko",
-    "fastapi",
-    "uvicorn",
-    "jinja2",
-    "pytest",
-    "requests",
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
 ]

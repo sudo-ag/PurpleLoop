@@ -1,14 +1,113 @@
-import paramiko
 import logging
-import socket
-import time
 import subprocess
 import json
 import re
+import os
+import tempfile
+import atexit
 from typing import List, Optional, Dict, Any
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+MAX_LOG_EVENTS = 25
+
+
+# How long the master connection lingers after the last session closes. It must
+# comfortably outlast the longest gap between commands (model inference can take
+# minutes); if it ever does drop, execute_remote() self-heals by reconnecting.
+DEFAULT_CONTROL_PERSIST = int(os.getenv("PL_SSH_CONTROL_PERSIST", "900"))
+
+# Brings up a backgrounded OpenSSH ControlMaster. We authenticate with the
+# password exactly once here; every later command rides the control socket with
+# no auth at all (see _ssh_session_cmd). We shell out to the system `ssh` binary
+# on purpose: on macOS it holds Local Network entitlement that a venv Python does
+# not, so a raw paramiko socket to a LAN target is blocked ("No route to host").
+SSH_MASTER_EXPECT = r"""
+set timeout $env(PL_SSH_TIMEOUT)
+
+spawn -noecho ssh -M -N -f \
+    -o ControlPath=$env(PL_SSH_CONTROL) \
+    -o ControlPersist=$env(PL_SSH_PERSIST) \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=$env(PL_SSH_TIMEOUT) \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
+    -o NumberOfPasswordPrompts=1 \
+    -- "$env(PL_SSH_USER)@$env(PL_SSH_HOST)"
+
+expect {
+    -re "(?i)are you sure you want to continue connecting" {
+        send "yes\r"
+        exp_continue
+    }
+    -re "(?i)password:" {
+        send -- "$env(PL_SSH_PASSWORD)\r"
+        exp_continue
+    }
+    -re "(?i)permission denied" {
+        exit 5
+    }
+    timeout {
+        exit 124
+    }
+    eof
+}
+
+catch wait result
+exit [lindex $result 3]
+"""
+
+
+def _compact_log_events(
+    events: List[Dict[str, Any]],
+    limit: int = MAX_LOG_EVENTS,
+) -> List[Dict[str, Any]]:
+    if len(events) <= limit:
+        return events
+
+    selected: List[int] = []
+    selected_set: set[int] = set()
+
+    def select(index: int) -> None:
+        if index not in selected_set and len(selected) < limit:
+            selected.append(index)
+            selected_set.add(index)
+
+    critical_indexes = [
+        index
+        for index, event in enumerate(events)
+        if event.get("severity") == "critical"
+    ]
+    for index in critical_indexes[-limit:]:
+        select(index)
+
+    for index in range(len(events) - 1, -1, -1):
+        if len(selected) >= limit:
+            break
+        if events[index].get("severity") in ("medium", "high", "critical"):
+            select(index)
+
+    for index in range(len(events) - 1, -1, -1):
+        if len(selected) >= limit:
+            break
+        select(index)
+
+    return [events[index] for index in sorted(selected)]
+
+
+def _clean_openssh_output(output: str) -> str:
+    cleaned_lines = []
+    for line in output.splitlines():
+        if "Permanently added" in line and "known hosts" in line:
+            continue
+        if re.search(r"(?i)password:\s*$", line):
+            continue
+        cleaned_lines.append(line)
+    cleaned = "\n".join(cleaned_lines).strip("\n")
+    return f"{cleaned}\n" if cleaned else ""
 
 
 class ToolExecutor:
@@ -35,93 +134,165 @@ class ToolExecutor:
         self.user = user
         self.pwd = pwd
         self.timeout = timeout
-        self.client: Optional[paramiko.SSHClient] = None
+        # One control socket per executor instance, so parallel targets never
+        # collide. Short dir keeps us well under the ~104-char AF_UNIX path cap.
+        self._control_dir = tempfile.mkdtemp(prefix="pl-ssh-")
+        self._control_path = os.path.join(self._control_dir, "cm.sock")
+        # Safety net: tear down the master if the orchestrator never calls
+        # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
+        atexit.register(self.disconnect)
+
+    @property
+    def _target(self) -> str:
+        return f"{self.user}@{self.host}"
+
+    def _master_alive(self) -> bool:
+        return os.path.exists(self._control_path)
 
     def connect(self):
-        """Establishes a persistent SSH connection."""
-        if self.client:
+        """Brings up the shared SSH ControlMaster (one password auth per host)."""
+        if self._master_alive():
             return
 
-        logger.info(f"Connecting to {self.host}...")
-        self.client = paramiko.SSHClient()
-        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        logger.info(f"Opening SSH master to {self.host}...")
+        os.makedirs(self._control_dir, exist_ok=True)
+        env = dict(os.environ)
+        env.update({
+            "PL_SSH_USER": self.user,
+            "PL_SSH_HOST": self.host,
+            "PL_SSH_PASSWORD": self.pwd,
+            "PL_SSH_TIMEOUT": str(self.timeout),
+            "PL_SSH_CONTROL": self._control_path,
+            "PL_SSH_PERSIST": str(DEFAULT_CONTROL_PERSIST),
+        })
         try:
-            self.client.connect(
-                hostname=self.host,
-                username=self.user,
-                password=self.pwd,
-                timeout=self.timeout
+            proc = subprocess.run(
+                ["expect", "-c", SSH_MASTER_EXPECT],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout + 15,
+                env=env,
             )
-            logger.info("SSH connection established.")
-        except Exception as e:
-            self.client = None
-            logger.exception(f"Failed to connect to {self.host}: {e}")
-            raise e
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "SSH master requires /usr/bin/expect, but expect was not found."
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                f"Timed out establishing SSH master to {self.host}."
+            ) from e
+
+        if not self._master_alive():
+            detail = (proc.stdout or proc.stderr or "").strip().splitlines()
+            raise RuntimeError(
+                f"Failed to establish SSH master to {self.host}: "
+                f"{detail[-1] if detail else 'unknown error'}"
+            )
+        logger.info("SSH master established to %s.", self.host)
 
     def disconnect(self):
-        """Closes the persistent SSH connection."""
-        if self.client:
-            self.client.close()
-            self.client = None
-            logger.info("SSH connection closed.")
+        """Tears down the ControlMaster and cleans up the socket."""
+        if self._master_alive():
+            subprocess.run(
+                ["ssh", "-O", "exit", "-o", f"ControlPath={self._control_path}",
+                 "--", self._target],
+                capture_output=True, text=True, timeout=10,
+            )
+        try:
+            if os.path.exists(self._control_path):
+                os.remove(self._control_path)
+            if os.path.isdir(self._control_dir):
+                os.rmdir(self._control_dir)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Generic command execution
     # ------------------------------------------------------------------
 
-    def execute_remote(self, command: str) -> str:
-        """
-        Executes a command on the target host via persistent SSH and returns the output.
-        """
+    def _check_forbidden(self, command: str, scope: str) -> None:
         for keyword in self.FORBIDDEN_KEYWORDS:
             if keyword in command:
-                logger.warning(f"Blocked forbidden remote command: {command}")
+                logger.warning(f"Blocked forbidden {scope} command: {command}")
                 raise ValueError(f"Forbidden command: {keyword} detected.")
 
-        if not self.client:
+    def _ssh_session_cmd(self, command: str) -> List[str]:
+        # Rides the existing master over ControlPath. BatchMode=yes means that if
+        # the master is somehow gone it fails fast (rc 255) instead of hanging on
+        # a password prompt, which is exactly the signal execute_remote() retries.
+        return [
+            "ssh",
+            "-o", f"ControlPath={self._control_path}",
+            "-o", "ControlMaster=no",
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "--",
+            self._target,
+            command,
+        ]
+
+    def _run_session(self, command: str) -> "tuple[bool, str]":
+        """Run one command over the master. Returns (connection_ok, text)."""
+        try:
+            result = subprocess.run(
+                self._ssh_session_cmd(command),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout + 10,
+            )
+        except FileNotFoundError:
+            return True, "Error: 'ssh' client not found on PATH."
+        except subprocess.TimeoutExpired:
+            return True, f"Error: Remote command timed out after {self.timeout} seconds."
+
+        # ssh uses exit code 255 exclusively for its own connection errors. With
+        # no stdout, that means the master dropped — signal a reconnect+retry.
+        if result.returncode == 255 and not result.stdout:
+            return False, result.stderr.strip()
+
+        output = _clean_openssh_output(result.stdout)
+        if output:
+            return True, output
+        if result.stderr.strip():
+            return True, result.stderr
+        if result.returncode != 0:
+            return True, f"Remote command failed with exit code {result.returncode}."
+        return True, "Remote command executed successfully (no output)."
+
+    def execute_remote(self, command: str) -> str:
+        """
+        Executes a command on the target host over the shared SSH ControlMaster.
+        Self-heals: if the master has aged out (long idle gaps during model
+        inference), it is re-established once and the command retried.
+        """
+        self._check_forbidden(command, "remote")
+
+        if not self._master_alive():
             self.connect()
 
+        ok, text = self._run_session(command)
+        if ok:
+            return text
+
+        # Master dropped mid-run — rebuild it once and retry. disconnect() first
+        # clears any stale socket so _master_alive() in connect() isn't fooled.
+        logger.warning("SSH master to %s dropped; reconnecting.", self.host)
         try:
-            stdin, stdout, stderr = self.client.exec_command(command, timeout=self.timeout)
-
-            output = ""
-            try:
-                while True:
-                    if stdout.channel.recv_ready():
-                        chunk = stdout.read(1024).decode('utf-8')
-                        if not chunk:
-                            break
-                        output += chunk
-
-                    if stdout.channel.exit_status_ready():
-                        output += stdout.read().decode('utf-8')
-                        break
-
-                    time.sleep(0.1)
-            except socket.timeout:
-                return f"Error: Remote command timed out after {self.timeout} seconds."
-            except Exception as e:
-                return f"Error reading remote output: {str(e)}"
-
-            error = stderr.read().decode('utf-8')
-            if error and not output:
-                logger.error(f"Remote command execution error: {error}")
-                return error
-
-            return output if output else "Remote command executed successfully (no output)."
+            self.disconnect()
+            self.connect()
         except Exception as e:
-            logger.exception(f"SSH execution failed: {e}")
-            self.client = None
-            raise e
+            return f"Error: SSH connection to {self.host} failed: {e}"
+        ok, text = self._run_session(command)
+        if not ok:
+            return f"Error: SSH connection to {self.host} failed: {text}"
+        return text
 
     def execute_local(self, command: str) -> str:
         """
         Executes a command on the local machine (e.g., Kali host) and returns the output.
         """
-        for keyword in self.FORBIDDEN_KEYWORDS:
-            if keyword in command:
-                logger.warning(f"Blocked forbidden local command: {command}")
-                raise ValueError(f"Forbidden local command: {keyword} detected.")
+        self._check_forbidden(command, "local")
 
         try:
             result = subprocess.run(
@@ -218,7 +389,7 @@ class ToolExecutor:
             f"sudo ls -la '{file_path}' 2>/dev/null || "
             f"ls -la '{file_path}' 2>/dev/null || true"
         )
-        return self._build_file_access_findings(audit_raw, stat_raw, ls_raw, file_path)
+        return self._parse_file_access(audit_raw, stat_raw, ls_raw, file_path)
 
     # ------------------------------------------------------------------
     # Parsers — turn raw command output into structured signals
@@ -337,11 +508,16 @@ class ToolExecutor:
             else "Monitor the failed login attempts. Consider blocking the source IP."
         )
 
+        visible_events = _compact_log_events(events)
+
         findings = {
             "tool": "investigate_logs",
             "log_type": "auth",
             "total_events": len(raw.splitlines()),
-            "events": events,
+            "parsed_events": len(events),
+            "events": visible_events,
+            "events_returned": len(visible_events),
+            "events_omitted": max(0, len(events) - len(visible_events)),
             "failed_attempts": failed_count,
             "successful_logins": success_count,
             "sudo_commands": sudo_count,
@@ -354,15 +530,16 @@ class ToolExecutor:
             "assessment": assessment,
             "recommendation": recommendation,
         }
+        return findings
 
     def _parse_syslog(self, raw: str) -> Dict[str, Any]:
         if not raw or raw.strip() in ("", "true"):
-            return json.dumps({
+            return {
                 "tool": "investigate_logs",
                 "log_type": "syslog",
                 "error": "No syslog available",
                 "events": [],
-            }, indent=2)
+            }
 
         events = []
         sudo_events = 0
@@ -417,11 +594,16 @@ class ToolExecutor:
             else "Review sudo activity."
         )
 
+        visible_events = _compact_log_events(events)
+
         return {
             "tool": "investigate_logs",
             "log_type": "syslog",
             "total_events": len(raw.splitlines()),
-            "events": events,
+            "parsed_events": len(events),
+            "events": visible_events,
+            "events_returned": len(visible_events),
+            "events_omitted": max(0, len(events) - len(visible_events)),
             "sudo_events": sudo_events,
             "flag_access_detected": flag_access,
             "suspicious_events": suspicious_count,
@@ -740,7 +922,7 @@ class ToolExecutor:
                 "Investigate other locations."
             )
 
-        return json.dumps(findings, indent=2)
+        return findings
 
     def investigate_users(self) -> str:
         """
