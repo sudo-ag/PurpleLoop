@@ -3,7 +3,28 @@ from typing import List, Dict, Any, Optional
 import requests
 import json
 import os
+import re
 from src.agents import Agent
+
+
+_RED_PHASE_GUIDANCE = {
+    "initial_enum": (
+        "Next objective: establish context with one compact enum command, then move on. "
+        "Good choices: `whoami; id; uname -a; hostname; pwd`."
+    ),
+    "flag_discovery": (
+        "Next objective: locate flag.txt. Use `find / -maxdepth 4 -name flag.txt "
+        "-print 2>/dev/null` or check common dirs. Do not repeat whoami/id."
+    ),
+    "flag_read": (
+        "Next objective: read the discovered flag path. Try `cat <path>`; if denied, "
+        "try `sudo cat <path>`."
+    ),
+    "privilege_check": (
+        "Next objective: get a usable privilege path. Try `sudo -n -l`, then SUID "
+        "and cron checks if sudo is unavailable."
+    ),
+}
 
 
 @dataclass
@@ -13,6 +34,7 @@ class SimulationState:
     red_captured_flag: bool = False
     blue_victory: bool = False
     current_agent_role: str = "red"
+    red_phase: str = "initial_enum"
     red_stalled_turns: int = 0
     red_failed_turns: int = 0   # turns where red made tool calls but none succeeded (output contains error/permission/no such/file not found)
 
@@ -64,6 +86,37 @@ class Orchestrator:
             return True
         return False
 
+    def _check_blue_victory(self, output: str) -> bool:
+        try:
+            data = json.loads(output)
+        except Exception:
+            lowered = output.lower()
+            return (
+                "sensitive file was accessed" in lowered
+                or "flag file access detected" in lowered
+                or "confirmed compromise" in lowered
+            )
+
+        if not isinstance(data, dict):
+            return False
+        if data.get("assessment") == "BREACH":
+            return True
+        if data.get("flag_access_detected") is True:
+            return True
+        if data.get("suspicious_count", 0) > 0 and (
+            data.get("tool") == "investigate_file_access"
+            or data.get("file_path") == self.flag_path
+        ):
+            return True
+        if data.get("critical_events", 0) > 0 or data.get("critical_count", 0) > 0:
+            return True
+        summary = str(data.get("summary", "")).lower()
+        return (
+            "sensitive file was accessed" in summary
+            or "flag file access detected" in summary
+            or "confirmed compromise" in summary
+        )
+
     # Error indicators that mean a red tool call produced no usable result
     # (permission denied, missing paths, bad syntax, etc.) rather than a
     # useful reconnaissance result the red agent can act on.
@@ -93,6 +146,84 @@ class Orchestrator:
                 return True
         return False
 
+    def _tool_call_signature(self, tool_call: Dict[str, Any]) -> str:
+        function = tool_call.get("function", {})
+        name = function.get("name", "")
+        arguments = function.get("arguments", {})
+        return json.dumps({"name": name, "arguments": arguments}, sort_keys=True)
+
+    def _red_tool_history(self) -> List[Dict[str, Any]]:
+        return [
+            entry
+            for entry in self.state.history
+            if entry.get("role") == "red" and "tool" in entry
+        ]
+
+    def _red_commands(self) -> List[str]:
+        commands = []
+        for entry in self._red_tool_history():
+            tool = entry.get("tool", {})
+            function = tool.get("function", {})
+            arguments = function.get("arguments", {})
+            command = arguments.get("command")
+            if isinstance(command, str):
+                commands.append(command)
+        return commands
+
+    def _discovered_flag_paths(self) -> List[str]:
+        paths = []
+        seen = set()
+        for entry in self._red_tool_history():
+            output = str(entry.get("output", ""))
+            command = ""
+            tool = entry.get("tool", {})
+            function = tool.get("function", {})
+            arguments = function.get("arguments", {})
+            if isinstance(arguments.get("command"), str):
+                command = arguments["command"]
+            for text in (command, output):
+                for path in re.findall(r"/[A-Za-z0-9_./-]*flag\.txt", text):
+                    if path not in seen:
+                        paths.append(path)
+                        seen.add(path)
+        return paths
+
+    def _update_red_phase(self) -> None:
+        commands = self._red_commands()
+        outputs = [str(entry.get("output", "")) for entry in self._red_tool_history()]
+        combined = "\n".join(commands + outputs).lower()
+
+        if self._discovered_flag_paths():
+            self.state.red_phase = "flag_read"
+            return
+        if "permission denied" in combined or "sudo -l" in combined or "sudo -n -l" in combined:
+            self.state.red_phase = "privilege_check"
+            return
+        if any("find" in command.lower() and "flag.txt" in command.lower() for command in commands):
+            self.state.red_phase = "privilege_check"
+            return
+        if len(commands) >= 2 or any("uid=" in output.lower() for output in outputs):
+            self.state.red_phase = "flag_discovery"
+            return
+        self.state.red_phase = "initial_enum"
+
+    def _red_phase_guidance(self) -> str:
+        self._update_red_phase()
+        guidance = _RED_PHASE_GUIDANCE[self.state.red_phase]
+        flag_paths = self._discovered_flag_paths()
+        if flag_paths and self.state.red_phase == "flag_read":
+            guidance += f" Discovered path(s): {', '.join(flag_paths)}."
+        return f"Red Phase: {self.state.red_phase}. {guidance}"
+
+    def _build_state_summary(self, role: str) -> str:
+        state_summary = (
+            f"Turn {self.state.turn}. Current Role: {role}. "
+            f"History: {self.state.history[-5:]}"
+        )
+        if role == "red":
+            state_summary += f"\n{self._red_phase_guidance()}"
+        return state_summary
+
     def step(self) -> Optional[str]:
         """
         Performs one turn of the simulation.
@@ -105,13 +236,29 @@ class Orchestrator:
         self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": None})
 
         # Construct current state for the agent
-        state_summary = f"Turn {self.state.turn}. Current Role: {role}. History: {self.state.history[-5:]}"
+        state_summary = self._build_state_summary(role)
 
         tools_called = 0
+        text_retries = 0
+        seen_tool_calls = set()
         while tools_called < self.max_tools_per_turn:
             action = agent.act(state_summary)
 
             if isinstance(action, str):
+                if tools_called == 0 and text_retries < 1 and role in ("red", "blue"):
+                    text_retries += 1
+                    if role == "red":
+                        state_summary += (
+                            "\nYour previous response was text, but red must call "
+                            "`execute_command`. Return a tool call now."
+                        )
+                    else:
+                        state_summary += (
+                            "\nYour previous response was text. Blue must either call "
+                            "the next investigation tool or write a final incident "
+                            "report only after confirmed compromise evidence."
+                        )
+                    continue
                 # Agent decided to stop or just sent a message
                 self.state.history.append({"role": role, "action": "text", "content": action})
                 self._notify_dashboard("agent_action", {"role": role, "type": "text", "content": action})
@@ -119,15 +266,21 @@ class Orchestrator:
 
             if isinstance(action, list):
                 # Agent called tools
+                tools_before_batch = tools_called
                 for tool_call in action:
-                    tools_called += 1
-                    if tools_called > self.max_tools_per_turn:
+                    if tools_called >= self.max_tools_per_turn:
                         break
+
+                    signature = self._tool_call_signature(tool_call)
+                    if signature in seen_tool_calls:
+                        continue
+                    seen_tool_calls.add(signature)
 
                     # Notify dashboard of tool call
                     self._notify_dashboard("agent_action", {"role": role, "type": "tool", "content": str(tool_call)})
 
                     output = agent.process_tool_call(tool_call)
+                    tools_called += 1
                     self.state.history.append({"role": role, "tool": tool_call, "output": output})
 
                     # Notify dashboard of tool output
@@ -137,8 +290,18 @@ class Orchestrator:
                         self.state.red_captured_flag = True
                         self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": "red"})
                         return "red"
+                    if role == "blue" and self._check_blue_victory(output):
+                        self.state.blue_victory = True
+                        self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": "blue"})
+                        return "blue"
 
                     state_summary += f"\nTool Call: {tool_call['function']['name']} -> Output: {output}"
+
+                if tools_called == tools_before_batch:
+                    break
+
+                if text_retries > 0:
+                    break
 
                 if tools_called >= self.max_tools_per_turn:
                     break
@@ -260,9 +423,16 @@ class Orchestrator:
         """
         Generates a human-readable Markdown report of the simulation history.
         """
+        if self.state.red_captured_flag:
+            final_result = "Winner: RED"
+        elif self.state.blue_victory:
+            final_result = "Winner: BLUE"
+        else:
+            final_result = "No Winner"
+
         report = []
         report.append("# 🛡️ PurpleLoop Battle Report")
-        report.append(f"\n**Final Result:** {('Winner: ' + self.state.current_agent_role.upper() if self.state.red_captured_flag or self.state.blue_victory else 'No Winner')}")
+        report.append(f"\n**Final Result:** {final_result}")
         report.append(f"**Total Turns:** {self.state.turn}\n")
         report.append("## 📜 Battle Timeline\n")
 
