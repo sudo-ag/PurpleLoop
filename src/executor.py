@@ -5,6 +5,7 @@ import re
 import os
 import tempfile
 import atexit
+import datetime
 from typing import List, Optional, Dict, Any
 
 logging.basicConfig(level=logging.INFO)
@@ -110,6 +111,40 @@ def _clean_openssh_output(output: str) -> str:
     return f"{cleaned}\n" if cleaned else ""
 
 
+_SYSLOG_MONTHS = {
+    m: i for i, m in enumerate(
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)
+}
+
+
+def _syslog_line_epoch(line: str, year: int, ref_epoch: Optional[float]) -> Optional[float]:
+    """Epoch of a line's leading syslog timestamp ("Sep 16 22:59:12"), or None.
+
+    Syslog omits the year, so we anchor to the target's year. If that lands the
+    event more than a day in the future of ref_epoch, it's a December-read-in-
+    January wrap, so roll back a year.
+    """
+    parts = line.split(maxsplit=3)
+    if len(parts) < 3:
+        return None
+    month = _SYSLOG_MONTHS.get(parts[0])
+    if month is None:
+        return None
+    try:
+        day = int(parts[1])
+        hh, mm, ss = (int(x) for x in parts[2].split(":"))
+        ts = datetime.datetime(year, month, day, hh, mm, ss).timestamp()
+    except (ValueError, TypeError):
+        return None
+    if ref_epoch is not None and ts > ref_epoch + 86400:
+        try:
+            ts = datetime.datetime(year - 1, month, day, hh, mm, ss).timestamp()
+        except ValueError:
+            pass
+    return ts
+
+
 class ToolExecutor:
     """
     The SSH Bridge for executing commands on a target host.
@@ -138,6 +173,10 @@ class ToolExecutor:
         # collide. Short dir keeps us well under the ~104-char AF_UNIX path cap.
         self._control_dir = tempfile.mkdtemp(prefix="pl-ssh-")
         self._control_path = os.path.join(self._control_dir, "cm.sock")
+        # Blue log analysis is scoped to events at/after this target-clock epoch.
+        # None = no scoping (full history), which is the default for unit tests.
+        self.analysis_since: Optional[float] = None
+        self._analysis_year: int = datetime.datetime.now().year
         # Safety net: tear down the master if the orchestrator never calls
         # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
         atexit.register(self.disconnect)
@@ -320,6 +359,33 @@ class ToolExecutor:
         """
         return self.execute_remote(command)
 
+    def mark_analysis_window(self) -> None:
+        """
+        Start blue's log-analysis window at the target's current time.
+
+        Events older than this are pre-existing box history (flag provisioning,
+        prior runs) — not this engagement — so blue ignores them and can no
+        longer win on stale logs. Anchored to the target's own clock, read over
+        SSH, so controller/target time skew can't shift the window.
+        """
+        out = self.execute("date +%s").strip()
+        try:
+            self.analysis_since = float(out.split()[0])
+        except (ValueError, IndexError):
+            self.analysis_since = None
+            logger.warning("Could not read target clock; blue will see full log history.")
+            return
+        self._analysis_year = datetime.datetime.fromtimestamp(self.analysis_since).year
+        logger.info("Blue analysis window starts at target epoch %d.", int(self.analysis_since))
+
+    def _within_window(self, line: str) -> bool:
+        """True if a log line is in blue's analysis window (or no window is set)."""
+        if self.analysis_since is None:
+            return True
+        ts = _syslog_line_epoch(line, self._analysis_year, self.analysis_since)
+        # Fail open: lines we can't timestamp are kept rather than silently lost.
+        return ts is None or ts >= self.analysis_since
+
     # ------------------------------------------------------------------
     # Blue team investigation tools (Option B — structured signals)
     # These return JSON-formatted strings that the blue agent can parse
@@ -425,6 +491,8 @@ class ToolExecutor:
 
         for line in raw.splitlines():
             if not line.strip():
+                continue
+            if not self._within_window(line):
                 continue
             evt: Dict[str, Any] = {"raw": line}
             if "Failed password" in line or "authentication failure" in line.lower():
@@ -548,6 +616,8 @@ class ToolExecutor:
 
         for line in raw.splitlines():
             if not line.strip():
+                continue
+            if not self._within_window(line):
                 continue
             evt: Dict[str, Any] = {"raw": line}
             if "sudo:" in line and "COMMAND=" in line:

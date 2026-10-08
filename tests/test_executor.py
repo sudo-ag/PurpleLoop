@@ -1,3 +1,4 @@
+import datetime
 import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
@@ -95,6 +96,53 @@ def test_connect_raises_when_master_never_comes_up():
         )
         with pytest.raises(RuntimeError, match="Failed to establish SSH master"):
             executor.connect()
+
+
+def test_mark_analysis_window_reads_target_clock():
+    executor = _executor()
+    executor.execute = MagicMock(return_value="1760000000\n")
+    executor.mark_analysis_window()
+    assert executor.analysis_since == 1760000000.0
+    assert executor.execute.call_args.args[0] == "date +%s"
+
+
+_WINDOW_START = datetime.datetime(2026, 10, 8, 12, 0, 0)
+_STALE_FLAG_LINE = (
+    "Sep 16 22:59:12 ubuntu sudo:  vagrant : TTY=unknown ; PWD=/home/vagrant ; "
+    "USER=root ; COMMAND=/usr/bin/tee /root/flag.txt"
+)
+_RECENT_FLAG_LINE = (
+    "Oct 8 12:05:00 ubuntu sudo:  vagrant : TTY=pts/0 ; PWD=/home/vagrant ; "
+    "USER=root ; COMMAND=/bin/cat /root/flag.txt"
+)
+
+
+def test_analysis_window_excludes_stale_flag_access():
+    # The exact bug: a weeks-old flag-provisioning line must NOT win for blue.
+    executor = _executor()
+    executor.analysis_since = _WINDOW_START.timestamp()
+    executor._analysis_year = 2026
+    result = executor._parse_auth_log(_STALE_FLAG_LINE)
+    assert result["flag_access_detected"] is False
+    assert result["events"] == []
+    assert result["assessment"] != "BREACH"
+
+
+def test_analysis_window_keeps_in_window_flag_access():
+    executor = _executor()
+    executor.analysis_since = _WINDOW_START.timestamp()
+    executor._analysis_year = 2026
+    result = executor._parse_auth_log(_RECENT_FLAG_LINE)
+    assert result["flag_access_detected"] is True
+    assert result["assessment"] == "BREACH"
+
+
+def test_no_window_set_preserves_full_history_behavior():
+    # Default (no window) keeps the original behavior — stale line still flagged.
+    executor = _executor()
+    assert executor.analysis_since is None
+    result = executor._parse_auth_log(_STALE_FLAG_LINE)
+    assert result["flag_access_detected"] is True
 
 def test_parse_auth_log_returns_findings():
     executor = ToolExecutor(host="localhost", user="testuser", pwd="testpassword")

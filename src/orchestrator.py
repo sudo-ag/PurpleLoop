@@ -199,6 +199,16 @@ class Orchestrator:
                 print(f"Failed to establish initial connection: {e}")
                 # Non-fatal for the sim — fall back to per-call reconnect behavior in the executor.
 
+        # 1b. Scope blue's log analysis to THIS run. Without it, blue reads the
+        # box's months-old provisioning history (flag setup, etc.) and declares
+        # an instant BREACH before red acts. Anchored to the target's own clock
+        # to avoid controller/target skew.
+        if self._executor_supports("mark_analysis_window"):
+            try:
+                self.red_agent.executor.mark_analysis_window()
+            except Exception as e:
+                print(f"Could not set analysis window (continuing): {e}")
+
         # 2. Load long-term knowledge
         knowledge = self._load_knowledge()
         self.red_agent.experience = knowledge.get("red", [])
