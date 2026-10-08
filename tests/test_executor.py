@@ -198,3 +198,54 @@ def test_investigate_file_access_returns_structured_findings():
     assert result["tool"] == "investigate_file_access"
     assert result["file_exists"] is True
     assert result["assessment"] == "BREACH"
+
+
+_NO_OUTPUT = "Remote command executed successfully (no output)."
+_LS_FLAG = "-rw-r--r-- 1 root root 26 Sep 16 23:10 /root/flag.txt"
+
+
+def test_file_access_breach_from_atime_in_window_without_auditd():
+    # The live gap: no auditd, but the flag's atime lands inside blue's window,
+    # so the read must be detected deterministically from stat alone.
+    executor = _executor()
+    executor.analysis_since = 1760000000.0
+    executor.execute = MagicMock(side_effect=[
+        _NO_OUTPUT,                               # ausearch: no auditd
+        "1760000500 1759000000 1759000000 root 644",  # stat: atime > window start
+        _LS_FLAG,
+    ])
+
+    result = executor.investigate_file_access("/root/flag.txt")
+
+    assert result["audit_available"] is False
+    assert result["flag_access_detected"] is True
+    assert result["assessment"] == "BREACH"
+
+
+def test_file_access_stale_atime_is_not_breach():
+    # Flag last read before the engagement window and never after its last
+    # write — must NOT be scored as a breach for this run.
+    executor = _executor()
+    executor.analysis_since = 1760000000.0
+    executor.execute = MagicMock(side_effect=[
+        _NO_OUTPUT,
+        "1759999000 1759999000 1759999000 root 644",  # atime < window, == mtime
+        _LS_FLAG,
+    ])
+
+    result = executor.investigate_file_access("/root/flag.txt")
+
+    assert result["flag_access_detected"] is False
+    assert result["assessment"] != "BREACH"
+
+
+def test_file_access_no_output_sentinel_is_not_audit_available():
+    # The sentinel the executor returns for a successful no-output command must
+    # not be mistaken for real audit data (the old false-CLEAN bug).
+    executor = _executor()
+    executor.execute = MagicMock(side_effect=[_NO_OUTPUT, _NO_OUTPUT, _LS_FLAG])
+
+    result = executor.investigate_file_access("/root/flag.txt")
+
+    assert result["audit_available"] is False
+    assert result["file_exists"] is True

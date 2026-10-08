@@ -111,6 +111,27 @@ def _clean_openssh_output(output: str) -> str:
     return f"{cleaned}\n" if cleaned else ""
 
 
+# Strings the executor returns when a command ran but produced nothing useful.
+# `|| true` chains make these very common, and treating them as real data is
+# how investigate_file_access used to report CLEAN on a box with no auditd.
+_NON_SUBSTANTIVE = {
+    "",
+    "true",
+    "Remote command executed successfully (no output).",
+    "Local command executed successfully (no output).",
+}
+
+
+def _is_substantive(output: Optional[str]) -> bool:
+    """True when command output carries real data, not an empty/sentinel result."""
+    if output is None:
+        return False
+    stripped = output.strip()
+    if stripped in _NON_SUBSTANTIVE:
+        return False
+    return not stripped.startswith("Error:")
+
+
 _SYSLOG_MONTHS = {
     m: i for i, m in enumerate(
         ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -448,8 +469,11 @@ class ToolExecutor:
         audit_raw = self.execute(
             f"sudo ausearch -f '{file_path}' -ts recent 2>/dev/null || true"
         )
+        # Epoch atime/mtime/ctime + owner + mode. sudo first so /root is
+        # traversable; the epochs let us detect access without auditd.
         stat_raw = self.execute(
-            f"stat '{file_path}' 2>/dev/null || true"
+            f"sudo stat -c '%X %Y %Z %U %a' '{file_path}' 2>/dev/null || "
+            f"stat -c '%X %Y %Z %U %a' '{file_path}' 2>/dev/null || true"
         )
         ls_raw = self.execute(
             f"sudo ls -la '{file_path}' 2>/dev/null || "
@@ -877,13 +901,14 @@ class ToolExecutor:
             "access_events": [],
             "suspicious_access_count": 0,
             "critical_access_count": 0,
+            "flag_access_detected": False,
             "summary": "",
             "assessment": "UNKNOWN",
             "recommendation": "",
         }
 
         # File exists and what are its permissions?
-        if ls_raw and not ls_raw.strip().startswith("Error:") and ls_raw.strip() != "true":
+        if _is_substantive(ls_raw):
             if filepath in ls_raw or "/root/" in ls_raw:
                 findings["file_exists"] = True
                 findings["ls_output"] = ls_raw.strip()
@@ -894,13 +919,27 @@ class ToolExecutor:
                             findings["file_permissions"] = parts[0]
                             findings["file_owner"] = parts[2]
 
-        # Stat info
-        if stat_raw and not stat_raw.strip().startswith("Error:") and stat_raw.strip() != "true":
-            findings["stat_available"] = True
+        # Stat info — epochs: atime mtime ctime owner mode
+        atime = mtime = None
+        if _is_substantive(stat_raw):
             findings["stat_output"] = stat_raw.strip()
+            parts = stat_raw.strip().split()
+            if len(parts) >= 3:
+                try:
+                    atime, mtime, ctime = (int(parts[0]), int(parts[1]), int(parts[2]))
+                    findings["stat_available"] = True
+                    findings["atime"] = atime
+                    findings["mtime"] = mtime
+                    findings["ctime"] = ctime
+                except ValueError:
+                    pass
+            if len(parts) >= 4 and not findings["file_owner"]:
+                findings["file_owner"] = parts[3]
+            if len(parts) >= 5:
+                findings["file_mode"] = parts[4]
 
         # Auditd info
-        if audit_raw and not audit_raw.strip().startswith("Error:") and audit_raw.strip() != "true":
+        if _is_substantive(audit_raw):
             findings["audit_available"] = True
             findings["audit_output"] = audit_raw.strip()
             for line in audit_raw.splitlines():
@@ -920,20 +959,7 @@ class ToolExecutor:
                     evt["user_info"] = line.strip()
                 findings["access_events"].append(evt)
 
-        # If file exists and we have no audit data, flag it
-        if findings["file_exists"] and not findings["audit_available"]:
-            findings["access_events"].append({
-                "timestamp": "unknown",
-                "action": "exists",
-                "severity": "medium",
-                "note": (
-                    f"Sensitive file {filepath} exists but audit log "
-                    "unavailable — access cannot be verified from logs"
-                ),
-            })
-            findings["suspicious_access_count"] = 1
-
-        # Count suspicious/critical
+        # Count suspicious/critical from any audit events gathered above.
         for evt in findings["access_events"]:
             sev = evt.get("severity", "informational")
             if sev in ("high", "critical"):
@@ -941,9 +967,24 @@ class ToolExecutor:
             if sev == "critical":
                 findings["critical_access_count"] += 1
 
-        # Build summary and assessment
+        # atime-based detection — the deterministic path when auditd is absent
+        # (Metasploitable3 ships without it). A read updates atime; if that read
+        # falls inside blue's engagement window, the file was touched during THIS
+        # run. Falling back on atime > mtime catches reads-after-last-write whose
+        # exact time we cannot bound to the window.
+        in_window_access = (
+            atime is not None
+            and self.analysis_since is not None
+            and atime >= self.analysis_since
+        )
+        read_after_write = atime is not None and mtime is not None and atime > mtime
+
+        # Build summary and assessment. Precedence: auditd confirmation, then an
+        # atime read inside the window, then a historical read-after-write, then
+        # audit-clean, then exists-but-unverifiable.
         if findings["file_exists"]:
             if findings["audit_available"] and findings["critical_access_count"] > 0:
+                findings["flag_access_detected"] = True
                 findings["summary"] = (
                     f"CRITICAL: Sensitive file {filepath} was accessed/read. "
                     "Audit logs confirm access. Possible data exfiltration."
@@ -962,6 +1003,50 @@ class ToolExecutor:
                 findings["recommendation"] = (
                     "Investigate the access events. Determine if data was exfiltrated."
                 )
+            elif in_window_access:
+                findings["flag_access_detected"] = True
+                findings["suspicious_access_count"] += 1
+                findings["critical_access_count"] += 1
+                findings["access_events"].append({
+                    "action": "read",
+                    "severity": "critical",
+                    "atime": atime,
+                    "note": (
+                        f"{filepath} was read during this engagement "
+                        f"(atime {atime} >= window start {int(self.analysis_since)})"
+                    ),
+                })
+                findings["summary"] = (
+                    f"CRITICAL: Sensitive file {filepath} was read during this "
+                    "engagement (access time falls inside the analysis window). "
+                    "Confirmed compromise."
+                )
+                findings["assessment"] = "BREACH"
+                findings["recommendation"] = (
+                    "IMMEDIATE: Treat as confirmed compromise. The flag file's "
+                    "access time proves it was read. Investigate the attacker."
+                )
+            elif read_after_write:
+                findings["suspicious_access_count"] += 1
+                findings["access_events"].append({
+                    "action": "read",
+                    "severity": "high",
+                    "atime": atime,
+                    "mtime": mtime,
+                    "note": (
+                        f"{filepath} was read after its last modification "
+                        f"(atime {atime} > mtime {mtime}) — timing predates or is "
+                        "outside the analysis window"
+                    ),
+                })
+                findings["summary"] = (
+                    f"Suspicious: {filepath} shows a read after its last write. "
+                    "Access time cannot be bound to this engagement's window."
+                )
+                findings["assessment"] = "SUSPICIOUS"
+                findings["recommendation"] = (
+                    "Investigate when and by whom the file was read."
+                )
             elif findings["audit_available"]:
                 findings["summary"] = (
                     f"Audit logs available for {filepath}. "
@@ -972,9 +1057,18 @@ class ToolExecutor:
                     "Continue monitoring. No suspicious access detected in audit logs."
                 )
             else:
+                findings["suspicious_access_count"] += 1
+                findings["access_events"].append({
+                    "action": "exists",
+                    "severity": "medium",
+                    "note": (
+                        f"Sensitive file {filepath} exists but neither auditd nor a "
+                        "readable access time was available — access unverifiable"
+                    ),
+                })
                 findings["summary"] = (
                     f"Sensitive file {filepath} exists. "
-                    "Audit logs not available — access cannot be verified from logs."
+                    "Access cannot be verified (no auditd, no readable atime)."
                 )
                 findings["assessment"] = "SUSPICIOUS"
                 findings["recommendation"] = (
