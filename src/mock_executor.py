@@ -53,6 +53,8 @@ class MockExecutor:
         logger.info(f"Mock executing: {command}")
         self.commands_run.append(command)
 
+        if "find" in command and "flag.txt" in command:
+            return "/root/flag.txt"
         if "flag.txt" in command and ("cat" in command or "grep" in command):
             return self.files.get("/root/flag.txt", "File not found")
         if "passwd" in command and "cat" in command:
@@ -100,6 +102,12 @@ class MockExecutor:
         suspicious = [e for e in self._auth_log_lines if e.get("suspicious")]
         failed_auths = [e for e in self._auth_log_lines if e.get("event") == "accepted_password" and e.get("source_ip")]
         sudo_events = [e for e in self._auth_log_lines if e.get("event") == "sudo_command"]
+        critical_events = [
+            event
+            for event in suspicious
+            if "flag.txt" in str(event.get("command", "")) or "flag.txt" in str(event.get("details", ""))
+        ]
+        flag_access_detected = bool(critical_events)
         return {
             "tool": "investigate_logs",
             "status": "success",
@@ -109,14 +117,24 @@ class MockExecutor:
             "failed_auth_count": len(failed_auths),
             "sudo_events_count": len(sudo_events),
             "suspicious_count": len(suspicious),
+            "suspicious_events": len(suspicious),
+            "critical_events": len(critical_events),
+            "flag_access_detected": flag_access_detected,
             "findings": self._auth_log_lines,
             "suspicious_findings": suspicious,
+            "critical_findings": critical_events,
             "failed_auth_events": failed_auths,
             "sudo_events": sudo_events,
             "summary": (
                 f"Auth log ({len(self._auth_log_lines)} events): "
                 f"{len(failed_auths)} auth events, {len(sudo_events)} sudo commands. "
                 f"{len(suspicious)} suspicious: {suspicious[0]['details'] if suspicious else 'N/A'}"
+            ),
+            "assessment": "BREACH" if flag_access_detected else "SUSPICIOUS" if suspicious else "CLEAN",
+            "recommendation": (
+                "IMMEDIATE ACTION: Flag file was accessed. Treat as confirmed compromise."
+                if flag_access_detected
+                else "Review suspicious authentication activity."
             ),
         }
 
