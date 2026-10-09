@@ -44,8 +44,45 @@ def test_red_victory():
     orch = Orchestrator(red_agent, blue_agent)
     winner = orch.step()
 
-    assert winner == "red"
+    # Graded scoring: reading the flag no longer ends the sim instantly — it
+    # records the access turn and opens blue's detection window.
+    assert winner is None
     assert orch.state.red_captured_flag is True
+    assert orch.state.red_access_turn == 0
+
+def test_graded_blue_wins_when_detecting_within_window():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.red_access_turn = 4
+    orch.state.blue_detect_turn = 6
+    orch.state.turn = 6
+    assert orch._resolve_outcome() == "blue"
+    assert orch.state.blue_victory is True
+    assert orch.detection_dwell() == 2
+
+def test_graded_blue_wins_on_early_detection():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.blue_detect_turn = 2  # caught before red reached the objective
+    orch.state.turn = 2
+    assert orch._resolve_outcome() == "blue"
+
+def test_graded_red_wins_when_window_elapses_undetected():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.red_access_turn = 4
+    orch.state.turn = 8  # 8 - 4 = 4 > 3, window closed with no detection
+    assert orch._resolve_outcome() == "red"
+
+def test_graded_late_detection_scores_red():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.red_access_turn = 4
+    orch.state.blue_detect_turn = 9  # dwell 5 > 3
+    orch.state.turn = 9
+    assert orch._resolve_outcome() == "red"
+
+def test_graded_window_still_open_is_undecided():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.red_access_turn = 4
+    orch.state.turn = 6  # 6 - 4 = 2 <= 3, blue still has time
+    assert orch._resolve_outcome() is None
 
 def test_blue_victory_stall():
     mock_executor = MagicMock(spec=ToolExecutor)
@@ -124,6 +161,22 @@ def test_generate_report_shows_blue_winner_when_blue_victory():
     report = orch.generate_report()
 
     assert "**Final Result:** Winner: BLUE" in report
+
+
+def test_report_shows_graded_outcome_and_dwell():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.red_captured_flag = True   # red reached the flag...
+    orch.state.red_access_turn = 4
+    orch.state.blue_detect_turn = 6
+    orch.state.blue_victory = True        # ...but blue detected in time
+    orch.state.turn = 6
+
+    report = orch.generate_report()
+
+    assert "**Final Result:** Winner: BLUE" in report
+    assert "Red reached objective:** turn 4" in report
+    assert "Blue detected breach:** turn 6" in report
+    assert "Detection dwell:** 2 turn(s)" in report
 
 def test_duplicate_red_command_only_executes_once_per_turn():
     red_agent = MagicMock(spec=Agent)
