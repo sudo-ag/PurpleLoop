@@ -58,8 +58,13 @@ actually on the box — more realistic telemetry for blue, and no synthetic setu
 
 ## Roadmap (sequenced)
 
-- [ ] **Step 1a — graded / dwell-time scoring** (dial 4; pure orchestrator, no
-      box changes). Make blue winnable by *detecting in time*. **Next up.**
+- [x] **Step 1a — graded / dwell-time scoring** (dial 4). Done: flag read no
+      longer ends the sim; winner resolved from dwell between red's access and
+      blue's detection (`detect_within_turns`, default 3). Report shows access
+      turn / detect turn / dwell. Live-verified RED win at full horizon.
+      (Also fixed en route: the analysis window used an absolute `date +%s` that
+      skewed against naive-local syslog parsing across timezones — now both
+      derive from the target wall clock.)
 - [ ] **Step 1b — separate red/blue identities** (box setup). Red = attacker
       account; blue = defender/root. Prereq for real containment.
 - [ ] **Step 1c — blue's first response action** (dial 3). One reversible action
