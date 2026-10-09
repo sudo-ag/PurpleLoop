@@ -98,12 +98,16 @@ def test_connect_raises_when_master_never_comes_up():
             executor.connect()
 
 
-def test_mark_analysis_window_reads_target_clock():
+def test_mark_analysis_window_reads_target_wall_clock():
+    from src.executor import _syslog_line_epoch
     executor = _executor()
-    executor.execute = MagicMock(return_value="1760000000\n")
+    # Target wall clock as syslog-style text, parsed in the same frame as log
+    # lines so a controller/target timezone gap can't skew the window.
+    executor.execute = MagicMock(return_value="2026 Oct  8 22:22:16\n")
     executor.mark_analysis_window()
-    assert executor.analysis_since == 1760000000.0
-    assert executor.execute.call_args.args[0] == "date +%s"
+    assert executor._analysis_year == 2026
+    assert executor.analysis_since == _syslog_line_epoch("Oct  8 22:22:16", 2026, None)
+    assert executor.execute.call_args.args[0] == 'date "+%Y %b %e %H:%M:%S"'
 
 
 _WINDOW_START = datetime.datetime(2026, 10, 8, 12, 0, 0)

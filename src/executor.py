@@ -389,15 +389,23 @@ class ToolExecutor:
         longer win on stale logs. Anchored to the target's own clock, read over
         SSH, so controller/target time skew can't shift the window.
         """
-        out = self.execute("date +%s").strip()
+        # Read the target's wall clock as syslog-style text ("2026 Oct  8 22:22:16")
+        # and convert it with the SAME parser used for log lines. A raw `date +%s`
+        # is an absolute epoch, but syslog lines are parsed as naive local time;
+        # when controller and target timezones differ that mismatch skews the
+        # window and lets pre-window events slip in. Deriving both sides from the
+        # target's wall clock through one parser makes the offset cancel out.
+        out = self.execute('date "+%Y %b %e %H:%M:%S"').strip()
         try:
-            self.analysis_since = float(out.split()[0])
+            year_str, clock = out.split(" ", 1)
+            self._analysis_year = int(year_str)
+            self.analysis_since = _syslog_line_epoch(clock, self._analysis_year, None)
         except (ValueError, IndexError):
             self.analysis_since = None
+        if self.analysis_since is None:
             logger.warning("Could not read target clock; blue will see full log history.")
             return
-        self._analysis_year = datetime.datetime.fromtimestamp(self.analysis_since).year
-        logger.info("Blue analysis window starts at target epoch %d.", int(self.analysis_since))
+        logger.info("Blue analysis window starts at target wall clock %s.", out)
 
     def _within_window(self, line: str) -> bool:
         """True if a log line is in blue's analysis window (or no window is set)."""
