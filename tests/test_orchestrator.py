@@ -59,11 +59,24 @@ def test_graded_blue_wins_when_detecting_within_window():
     assert orch.state.blue_victory is True
     assert orch.detection_dwell() == 2
 
-def test_graded_blue_wins_on_early_detection():
+def test_graded_detection_without_access_is_not_a_blue_win():
+    # Blue raising a detection with no actual red access is a false alarm, not a
+    # win — blue cannot win by crying wolf (the tcpdump false-positive bug).
     orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
-    orch.state.blue_detect_turn = 2  # caught before red reached the objective
+    orch.state.blue_detect_turn = 2
     orch.state.turn = 2
-    assert orch._resolve_outcome() == "blue"
+    assert orch._resolve_outcome() is None
+    assert orch.state.blue_victory is False
+
+
+def test_graded_detection_before_access_is_not_a_catch():
+    # A detection recorded before red actually accessed cannot be a catch of a
+    # breach that had not happened yet.
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
+    orch.state.blue_detect_turn = 2
+    orch.state.red_access_turn = 5
+    orch.state.turn = 5
+    assert orch._resolve_outcome() is None
 
 def test_graded_red_wins_when_window_elapses_undetected():
     orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), detect_within_turns=3)
@@ -202,13 +215,15 @@ def test_blue_compromise_evidence_wins_immediately():
         }
     }
     blue_agent.act.return_value = [tool_call]
+    # A CONFIRMED in-window flag read (flag_access_detected True) — the only kind
+    # of file-access finding that counts as catching the objective.
     blue_agent.process_tool_call.return_value = json.dumps({
         "tool": "investigate_file_access",
-        "status": "success",
         "file_path": "/root/flag.txt",
-        "exists": True,
-        "suspicious_count": 1,
-        "summary": "SENSITIVE FILE WAS ACCESSED — potential exfiltration.",
+        "file_exists": True,
+        "flag_access_detected": True,
+        "assessment": "BREACH",
+        "summary": "CRITICAL: Sensitive file /root/flag.txt was read during this engagement.",
     })
 
     orch = Orchestrator(red_agent, blue_agent)
@@ -217,6 +232,8 @@ def test_blue_compromise_evidence_wins_immediately():
 
     assert winner == "blue"
     assert orch.state.blue_victory is True
+    # Blue's confirmed flag detection corroborates that red accessed the objective.
+    assert orch.state.red_access_turn is not None
 
 def test_red_text_response_retries_for_tool_call():
     red_agent = MagicMock(spec=Agent)
@@ -364,6 +381,30 @@ def test_blue_suspicious_processes_do_not_confirm_victory():
 
     assert winner is None
     assert orch.state.blue_victory is False
+
+def test_process_breach_on_benign_service_is_not_a_victory():
+    # The live false positive: investigate_processes returns assessment BREACH
+    # because a benign baseline service (tcpdump) was flagged critical. With no
+    # flag_access_detected, this must NOT confirm a blue win.
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    tool_call = {'function': {'name': 'investigate_processes', 'arguments': {}}}
+    blue_agent.act.return_value = [tool_call]
+    blue_agent.process_tool_call.return_value = json.dumps({
+        "tool": "investigate_processes",
+        "assessment": "BREACH",
+        "suspicious_count": 1,
+        "critical_count": 1,
+        "summary": "CRITICAL: Suspicious processes that may indicate attacker activity.",
+    })
+
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.current_agent_role = "blue"
+    winner = orch.step()
+
+    assert winner is None
+    assert orch.state.blue_victory is False
+    assert orch.state.blue_detect_turn is None
 
 def test_blue_text_response_before_confirmed_evidence_retries_for_tool_call():
     red_agent = MagicMock(spec=Agent)

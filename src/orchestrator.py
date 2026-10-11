@@ -102,6 +102,14 @@ class Orchestrator:
         return False
 
     def _check_blue_victory(self, output: str) -> bool:
+        """True only when blue has CONFIRMED access to the objective (the flag).
+
+        Generic 'suspicious'/'critical' process or network findings are presence
+        signals, not an objective catch — treating them as a win is what let a
+        benign baseline service (e.g. `tcpdump`) hand blue a false-positive win.
+        The authoritative signal is `flag_access_detected` (set only on an
+        in-window flag read); a read-after-write SUSPICIOUS result is NOT a catch.
+        """
         try:
             data = json.loads(output)
         except Exception:
@@ -114,16 +122,7 @@ class Orchestrator:
 
         if not isinstance(data, dict):
             return False
-        if data.get("assessment") == "BREACH":
-            return True
         if data.get("flag_access_detected") is True:
-            return True
-        if data.get("suspicious_count", 0) > 0 and (
-            data.get("tool") == "investigate_file_access"
-            or data.get("file_path") == self.flag_path
-        ):
-            return True
-        if data.get("critical_events", 0) > 0 or data.get("critical_count", 0) > 0:
             return True
         summary = str(data.get("summary", "")).lower()
         return (
@@ -378,6 +377,13 @@ class Orchestrator:
                     if role == "blue" and self.state.blue_detect_turn is None \
                             and self._check_blue_victory(output):
                         self.state.blue_detect_turn = self.state.turn
+                        # Blue confirming flag access is itself proof the flag WAS
+                        # accessed. If red's access wasn't already recorded (red's
+                        # own output didn't surface it), corroborate it now so a
+                        # genuine catch resolves as a blue win instead of being
+                        # discarded as a no-access false alarm.
+                        if self.state.red_access_turn is None:
+                            self.state.red_access_turn = self.state.turn
                         self._notify_dashboard("blue_detection", {"turn": self.state.turn})
 
                     state_summary += f"\nTool Call: {tool_call['function']['name']} -> Output: {output}"
@@ -459,14 +465,18 @@ class Orchestrator:
         access = self.state.red_access_turn
         detect = self.state.blue_detect_turn
 
-        if detect is not None:
-            if access is None or detect <= access:
-                # Blue flagged the intrusion at or before the objective was hit.
-                self.state.blue_victory = True
-                return "blue"
-            if detect - access <= self.detect_within_turns:
-                self.state.blue_victory = True
-                return "blue"
+        # Blue wins only by catching a REAL breach in time. A detection with no
+        # actual red access (access is None) is a false alarm, not a win — blue
+        # cannot win by crying wolf. A detection strictly before red's access
+        # (detect < access) likewise can't be a catch of a breach that had not
+        # happened yet, so the catch must fall in [access, access + K].
+        if (
+            access is not None
+            and detect is not None
+            and access <= detect <= access + self.detect_within_turns
+        ):
+            self.state.blue_victory = True
+            return "blue"
 
         if access is not None and self.state.turn - access > self.detect_within_turns:
             # Red reached the objective and blue missed the detection window.
