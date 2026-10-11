@@ -29,6 +29,7 @@ from src.orchestrator import Orchestrator
 
 REPO = Path(__file__).resolve().parent.parent
 EPISODES_PATH = REPO / "episodes.jsonl"
+REPORTS_DIR = REPO / "episode_reports"
 
 # Hook: (blue_executor, red_executor, episode_number) -> None. Increment 2 plugs
 # the scripted cleanup in here; the default is a no-op.
@@ -177,10 +178,12 @@ def run_episodes(
     reset_fn: Optional[ResetFn] = None,
     reset: bool = True,
     episodes_path: Path = EPISODES_PATH,
+    reports_dir: Path = REPORTS_DIR,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary."""
     model = model or os.getenv("MODEL", "llama3.2:latest")
+    reports_dir.mkdir(parents=True, exist_ok=True)
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
@@ -198,11 +201,21 @@ def run_episodes(
         )
         winner = orch.run_simulation(max_turns=max_turns)
         card = build_scorecard(orch.state, winner, i)
+        # Persist the full per-episode timeline so every scorecard is auditable —
+        # a learning loop is only as trustworthy as our ability to see what
+        # actually happened in each episode.
+        report_path = reports_dir / f"ep_{i:03d}.md"
+        try:
+            report_path.write_text(orch.generate_report(), encoding="utf-8")
+            card["report"] = str(report_path)
+        except Exception as e:
+            print(f"[episode {i}] could not write report: {e}")
         cards.append(card)
         _append_jsonl(episodes_path, card)
         print(
             f"[episode {i}/{n}] winner={card['winner'] or 'none'} "
-            f"red={card['red_outcome']} blue={card['blue_outcome']} dwell={card['dwell']}"
+            f"red={card['red_outcome']} blue={card['blue_outcome']} dwell={card['dwell']} "
+            f"-> {report_path.name}"
         )
 
     summary = summarize(cards)
