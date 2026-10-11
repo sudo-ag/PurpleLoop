@@ -731,7 +731,12 @@ class ToolExecutor:
                     pass
         self._contained_ips.clear()
 
-    _CONN_LOG_RULE = 'INPUT -m state --state NEW -j LOG --log-prefix "PLWATCH "'
+    # Scope tightly: only NEW inbound TCP SYNs on real interfaces. The old
+    # unscoped rule logged every packet (loopback, broadcast, DNS, multicast),
+    # flooding kern.log/syslog to hundreds of MB and wedging rsyslog — which
+    # silently killed auth.log delivery and blinded investigate_logs. Red's recon
+    # and brute-force are all TCP, so this keeps the signal and drops the torrent.
+    _CONN_LOG_RULE = 'INPUT ! -i lo -p tcp --syn -m state --state NEW -j LOG --log-prefix "PLWATCH "'
 
     def enable_connection_logging(self) -> bool:
         """Arm an iptables rule that LOGs new inbound connections, giving blue
@@ -761,11 +766,14 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     def _parse_auth_log(self, raw: str) -> Dict[str, Any]:
-        if not raw or raw.strip() in ("", "true"):
+        if not _is_substantive(raw):
+            # Empty read (or the executor's no-output sentinel). This is a SENSOR
+            # GAP, not a clean box — reporting CLEAN here is how a logging outage
+            # masquerades as "nothing to see". Surface it so blue can't be lulled.
             return {
                 "tool": "investigate_logs",
                 "log_type": "auth",
-                "error": "No auth.log available",
+                "error": "auth.log empty or unreadable",
                 "events": [],
                 "failed_auth_count": 0,
                 "successful_logins": 0,
@@ -775,9 +783,9 @@ class ToolExecutor:
                 "critical_events": 0,
                 "suspicious_ips": [],
                 "suspicious_users": [],
-                "summary": "No auth.log available.",
-                "assessment": "CLEAN",
-                "recommendation": "Monitor for suspicious activity.",
+                "summary": "auth.log is empty or unreadable — host auth logging may be down. This is NOT a clean result.",
+                "assessment": "UNAVAILABLE",
+                "recommendation": "Auth visibility is lost. Rely on network/file sensors and check the host's logging (rsyslog/auth.log).",
             }
 
         events = []

@@ -517,3 +517,12 @@ def test_file_access_no_output_sentinel_is_not_audit_available():
 
     assert result["audit_available"] is False
     assert result["file_exists"] is True
+
+def test_parse_auth_log_empty_read_is_unavailable_not_clean():
+    # An empty/unreadable auth.log (or the executor's no-output sentinel) is a
+    # SENSOR GAP, not a clean box — the old code reported CLEAN and hid outages.
+    executor = ToolExecutor(host="localhost", user="testuser", pwd="testpassword")
+    for raw in ("", "true", "Remote command executed successfully (no output)."):
+        result = executor._parse_auth_log(raw)
+        assert result["assessment"] == "UNAVAILABLE", f"raw={raw!r}"
+        assert result["flag_access_detected"] is False
