@@ -48,6 +48,8 @@ class SimulationState:
     red_failed_turns: int = 0   # turns where red made tool calls but none succeeded (output contains error/permission/no such/file not found)
     red_access_turn: Optional[int] = None   # turn red first reached the objective
     blue_detect_turn: Optional[int] = None  # turn blue first raised a confirmed BREACH
+    blue_contain_turn: Optional[int] = None  # turn blue firewalled the real attacker IP
+    contained_ip: Optional[str] = None       # the attacker IP blue contained
 
 class Orchestrator:
     def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json"):
@@ -130,6 +132,26 @@ class Orchestrator:
             or "flag file access detected" in summary
             or "confirmed compromise" in summary
         )
+
+    def _attacker_ip(self) -> Optional[str]:
+        """The attacker's source IP as the target sees it — red's jump host. None
+        for a single-box run (no jump), where attacker and defender share a source
+        and containment can't be attributed."""
+        return getattr(self.red_agent.executor, "jump_host", None)
+
+    def _check_blue_containment(self, output: str) -> Optional[str]:
+        """Return the IP blue successfully contained this turn, or None."""
+        try:
+            data = json.loads(output)
+        except Exception:
+            return None
+        if (
+            isinstance(data, dict)
+            and data.get("tool") == "contain_attacker"
+            and data.get("contained") is True
+        ):
+            return data.get("target_ip")
+        return None
 
     # Error indicators that mean a red tool call produced no usable result
     # (permission denied, missing paths, bad syntax, etc.) rather than a
@@ -268,7 +290,44 @@ class Orchestrator:
                 used.append(name)
         return used
 
+    def _blue_seen_attacker_ips(self) -> List[str]:
+        """Attacker IPs blue has already observed in its own tool output
+        (suspicious_ips), excluding blue's own control session IP."""
+        own = getattr(getattr(self.blue_agent, "executor", None), "control_source_ip", None)
+        seen: List[str] = []
+        for entry in self.state.history:
+            if entry.get("role") != "blue":
+                continue
+            out = entry.get("output", "")
+            if not isinstance(out, str):
+                continue
+            try:
+                data = json.loads(out)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            for ip in (data.get("suspicious_ips") or []):
+                if ip != own and ip not in seen:
+                    seen.append(ip)
+        return seen
+
     def _blue_tool_guidance(self) -> str:
+        # Once blue has actually observed an attacker IP, stop steering it to more
+        # investigation and give it a direct containment order — the weak model
+        # otherwise narrates the finding instead of acting on it.
+        if self.state.blue_contain_turn is None:
+            attackers = self._blue_seen_attacker_ips()
+            if attackers:
+                ip = attackers[0]
+                return (
+                    f"Blue guidance: You have IDENTIFIED attacker IP {ip} — it appears in "
+                    f"suspicious_ips and is NOT your own control session. Stop investigating "
+                    f"and CONTAIN it now: call `contain_attacker` with ip=\"{ip}\". Blocking "
+                    f"the attacker before it reads the flag wins the engagement. Do this "
+                    f"before any other tool."
+                )
+
         used = self._blue_tools_used()
         used_set = set(used)
         last = used[-1] if used else None
@@ -396,6 +455,17 @@ class Orchestrator:
                         if self.state.red_access_turn is None:
                             self.state.red_access_turn = self.state.turn
                         self._notify_dashboard("blue_detection", {"turn": self.state.turn})
+                    if role == "blue" and self.state.blue_contain_turn is None:
+                        contained_ip = self._check_blue_containment(output)
+                        # Only a block of the REAL attacker counts — blocking a
+                        # wrong IP doesn't stop red, so it isn't a containment win.
+                        if contained_ip and contained_ip == self._attacker_ip():
+                            self.state.blue_contain_turn = self.state.turn
+                            self.state.contained_ip = contained_ip
+                            self._notify_dashboard(
+                                "blue_containment",
+                                {"turn": self.state.turn, "ip": contained_ip},
+                            )
 
                     state_summary += f"\nTool Call: {tool_call['function']['name']} -> Output: {output}"
 
@@ -475,6 +545,14 @@ class Orchestrator:
         """
         access = self.state.red_access_turn
         detect = self.state.blue_detect_turn
+        contain = self.state.blue_contain_turn
+
+        # Prevention beats detection: if blue firewalled the attacker before it
+        # reached the objective, the attack is stopped and blue wins. (Containment
+        # physically blocks red, so access normally stays None once this fires.)
+        if contain is not None and (access is None or contain <= access):
+            self.state.blue_victory = True
+            return "blue"
 
         # Blue wins only by catching a REAL breach in time. A detection with no
         # actual red access (access is None) is a false alarm, not a win — blue
@@ -612,6 +690,11 @@ class Orchestrator:
         report.append(
             f"**Blue detected breach:** "
             f"{'turn ' + str(detect) if detect is not None else 'no'}"
+        )
+        contain = self.state.blue_contain_turn
+        report.append(
+            f"**Blue contained attacker:** "
+            f"{'turn ' + str(contain) + ' (' + str(self.state.contained_ip) + ')' if contain is not None else 'no'}"
         )
         dwell = self.detection_dwell()
         if dwell is not None:

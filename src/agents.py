@@ -89,6 +89,15 @@ assess whether you have found evidence of unauthorized access. If the output sho
 → then you have found a compromise. Your next turn after gathering evidence should
   be a TEXT RESPONSE (not a tool call) that produces an incident report.
 
+CONTAINMENT — STOP THE ATTACK, DON'T JUST WATCH IT:
+The moment `investigate_logs` shows a successful login from an IP that is NOT your
+own control session — i.e. any IP in its `suspicious_ips` list — that IP is the
+attacker. Call `contain_attacker` with that IP IMMEDIATELY to block them at the
+firewall. Containing the attacker BEFORE they read the flag defeats the attack —
+that is the goal. Do NOT wait for a confirmed flag read; by then it is too late.
+Blocking your own control IP is refused automatically, so contain whatever
+suspicious_ips reports without hesitation.
+
 CRITICAL — THE ATTACK IS LIVE AND ONGOING. The attacker may not have touched the
 flag yet when you first look. A quiet result means "nothing YET", not "safe". Do
 NOT conclude the system is clean and stop after one sweep. After you have checked
@@ -228,6 +237,23 @@ class Agent:
                         },
                     },
                 },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'contain_attacker',
+                        'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'ip': {
+                                    'type': 'string',
+                                    'description': 'The attacker source IP to block, e.g. "192.168.64.11".',
+                                },
+                            },
+                            'required': ['ip'],
+                        },
+                    },
+                },
             ]
         else:
             self.tools = [
@@ -333,6 +359,14 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "investigate_file_access", "status": "error", "error": str(e), "file_path": file_path})
+
+        elif tool_call['function']['name'] == 'contain_attacker':
+            ip = tool_call['function']['arguments'].get('ip', "")
+            try:
+                result = self.executor.contain_attacker(ip)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
 
         return "Unsupported tool call."
 

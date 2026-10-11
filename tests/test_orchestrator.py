@@ -59,6 +59,61 @@ def test_graded_blue_wins_when_detecting_within_window():
     assert orch.state.blue_victory is True
     assert orch.detection_dwell() == 2
 
+def _jump_red_orch(detect_within_turns=3):
+    red_agent = MagicMock(spec=Agent)
+    # Red reaches the target through a jump host, so the attacker IP is .11.
+    red_agent.executor = MagicMock()
+    red_agent.executor.jump_host = "192.168.64.11"
+    blue_agent = MagicMock(spec=Agent)
+    return Orchestrator(red_agent, blue_agent, detect_within_turns=detect_within_turns)
+
+
+def test_containment_before_access_is_a_blue_win():
+    orch = _jump_red_orch()
+    orch.state.blue_contain_turn = 5
+    orch.state.turn = 5
+    # red never reached the objective (contained first)
+    assert orch._resolve_outcome() == "blue"
+    assert orch.state.blue_victory is True
+
+
+def test_containment_after_access_is_too_late():
+    orch = _jump_red_orch()
+    orch.state.red_access_turn = 4
+    orch.state.blue_contain_turn = 7   # contained, but red already read the flag
+    orch.state.turn = 9                # window (3) elapsed with no in-time detect
+    assert orch._resolve_outcome() == "red"
+
+
+def test_containment_of_attacker_ip_is_recorded():
+    orch = _jump_red_orch()
+    orch.state.current_agent_role = "blue"
+    tool_call = {'function': {'name': 'contain_attacker', 'arguments': {'ip': '192.168.64.11'}}}
+    orch.blue_agent.act.return_value = [tool_call]
+    orch.blue_agent.process_tool_call.return_value = json.dumps({
+        "tool": "contain_attacker", "target_ip": "192.168.64.11",
+        "contained": True, "assessment": "CONTAINED", "summary": "blocked",
+    })
+    winner = orch.step()
+    assert winner == "blue"
+    assert orch.state.blue_contain_turn is not None
+    assert orch.state.contained_ip == "192.168.64.11"
+
+
+def test_containment_of_wrong_ip_is_not_a_win():
+    orch = _jump_red_orch()
+    orch.state.current_agent_role = "blue"
+    tool_call = {'function': {'name': 'contain_attacker', 'arguments': {'ip': '10.0.0.9'}}}
+    orch.blue_agent.act.return_value = [tool_call]
+    orch.blue_agent.process_tool_call.return_value = json.dumps({
+        "tool": "contain_attacker", "target_ip": "10.0.0.9",
+        "contained": True, "assessment": "CONTAINED", "summary": "blocked",
+    })
+    winner = orch.step()
+    assert winner is None
+    assert orch.state.blue_contain_turn is None
+
+
 def test_graded_detection_without_access_is_not_a_blue_win():
     # Blue raising a detection with no actual red access is a false alarm, not a
     # win — blue cannot win by crying wolf (the tcpdump false-positive bug).
@@ -319,6 +374,30 @@ def test_red_phase_jumps_to_flag_read_on_confirmed_root():
     assert "Red Phase: flag_read" in summary
     assert "sudo cat /root/flag.txt" in summary
     assert "passwordless root" in summary
+
+
+def test_blue_guidance_orders_containment_once_attacker_ip_seen():
+    red_agent = MagicMock(spec=Agent)
+    red_agent.executor = MagicMock()
+    red_agent.executor.jump_host = "192.168.64.11"
+    blue_agent = MagicMock(spec=Agent)
+    blue_agent.executor = MagicMock()
+    blue_agent.executor.control_source_ip = "192.168.64.1"
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [
+        {
+            "role": "blue",
+            "tool": {"function": {"name": "investigate_logs", "arguments": {}}},
+            "output": '{"tool": "investigate_logs", "suspicious_ips": ["192.168.64.11"]}',
+        },
+    ]
+
+    summary = orch._build_state_summary("blue")
+
+    assert "contain_attacker" in summary
+    assert '192.168.64.11' in summary
+    # Its own control IP must never be offered as a containment target.
+    assert "192.168.64.1\"" not in summary.replace("192.168.64.11", "")
 
 
 def test_blue_guidance_defaults_to_logs_heartbeat():
