@@ -73,6 +73,40 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int) -> Dict[str
     }
 
 
+def _timeline_entry(h: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize one orch.state.history entry into a replay-friendly event."""
+    base = {"turn": h.get("turn"), "role": h.get("role")}
+    if "tool" in h:
+        fn = (h.get("tool") or {}).get("function", {})
+        return {**base, "kind": "tool", "name": fn.get("name"),
+                "args": fn.get("arguments", {}), "output": h.get("output", "")}
+    return {**base, "kind": "text", "name": None, "args": {}, "output": h.get("content", "")}
+
+
+def build_replay(state: Any, card: Dict[str, Any], episode: int,
+                 mode: Dict[str, bool]) -> Dict[str, Any]:
+    """Self-contained per-episode record for the static replay viewer.
+
+    Everything the viewer needs to play one episode back: the verdict, the
+    milestone turns to highlight, and the full turn-stamped timeline. Duck-typed
+    on `state` so tests can pass a stand-in.
+    """
+    g = lambda n: getattr(state, n, None)
+    return {
+        "episode": episode,
+        "winner": card.get("winner"),
+        "turns": g("turn"),
+        "mode": mode,
+        "milestones": {
+            "red_access_turn": g("red_access_turn"),
+            "blue_detect_turn": g("blue_detect_turn"),
+            "blue_contain_turn": g("blue_contain_turn"),
+            "contained_ip": g("contained_ip"),
+        },
+        "timeline": [_timeline_entry(h) for h in (g("history") or [])],
+    }
+
+
 def summarize(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Aggregate trends across a run of episodes (pure)."""
     n = len(cards)
@@ -211,6 +245,16 @@ def run_episodes(
             card["report"] = str(report_path)
         except Exception as e:
             print(f"[episode {i}] could not write report: {e}")
+        # Machine-readable timeline for the static replay viewer.
+        replay_path = reports_dir / f"ep_{i:03d}.json"
+        try:
+            mode = {"earned": earned, "observe": observe, "evade": evade}
+            replay_path.write_text(
+                json.dumps(build_replay(orch.state, card, i, mode), indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"[episode {i}] could not write replay json: {e}")
         cards.append(card)
         _append_jsonl(episodes_path, card)
         print(

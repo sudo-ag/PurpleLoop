@@ -88,3 +88,26 @@ def test_scripted_reset_rejects_non_ip_jump_host():
     cmds = " ".join(c.args[0] for c in blue.execute.call_args_list)
     assert "iptables" not in cmds
     assert "rm -rf" not in cmds
+
+
+def test_build_replay_normalizes_timeline_and_milestones():
+    from src.arena import build_replay
+    history = [
+        {"role": "red", "turn": 0, "tool": {"function": {"name": "run_on_attacker",
+            "arguments": {"command": "nmap -sT 192.168.64.12"}}}, "output": "22/tcp open"},
+        {"role": "blue", "turn": 1, "action": "text", "content": "Investigating."},
+    ]
+    state = _state(turn=9, red_access_turn=8, blue_detect_turn=9, history=history)
+    card = build_scorecard(state, "blue", 3)
+    rep = build_replay(state, card, 3, {"earned": True, "observe": True, "evade": False})
+
+    assert rep["episode"] == 3 and rep["winner"] == "blue" and rep["turns"] == 9
+    assert rep["mode"]["observe"] is True
+    assert rep["milestones"]["red_access_turn"] == 8
+    assert rep["milestones"]["blue_detect_turn"] == 9
+    assert len(rep["timeline"]) == 2
+    tool_evt, text_evt = rep["timeline"]
+    assert tool_evt == {"turn": 0, "role": "red", "kind": "tool",
+                        "name": "run_on_attacker",
+                        "args": {"command": "nmap -sT 192.168.64.12"}, "output": "22/tcp open"}
+    assert text_evt["kind"] == "text" and text_evt["output"] == "Investigating." and text_evt["role"] == "blue"

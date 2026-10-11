@@ -431,7 +431,7 @@ class Orchestrator:
                         )
                     continue
                 # Agent decided to stop or just sent a message
-                self.state.history.append({"role": role, "action": "text", "content": action})
+                self.state.history.append({"role": role, "turn": self.state.turn, "action": "text", "content": action})
                 self._notify_dashboard("agent_action", {"role": role, "type": "text", "content": action})
                 break
 
@@ -452,7 +452,7 @@ class Orchestrator:
 
                     output = agent.process_tool_call(tool_call)
                     tools_called += 1
-                    self.state.history.append({"role": role, "tool": tool_call, "output": output})
+                    self.state.history.append({"role": role, "turn": self.state.turn, "tool": tool_call, "output": output})
 
                     # Notify dashboard of tool output
                     self._notify_dashboard("battle_log", {"tool": str(tool_call), "output": output})
