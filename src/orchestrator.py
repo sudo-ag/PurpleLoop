@@ -57,7 +57,7 @@ class SimulationState:
     contained_ip: Optional[str] = None       # the attacker IP blue contained
 
 class Orchestrator:
-    def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json"):
+    def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False):
         self.red_agent = red_agent
         self.blue_agent = blue_agent
         self.max_tools_per_turn = max_tools_per_turn
@@ -69,6 +69,9 @@ class Orchestrator:
         self.detect_within_turns = detect_within_turns
         self.dashboard_url = dashboard_url
         self.knowledge_file = knowledge_file
+        # Observation/training mode: suppress blue's containment order so blue
+        # observes the attacker's full approach instead of ending at turn 1.
+        self.observe = observe
         self.state = SimulationState()
 
 
@@ -336,7 +339,7 @@ class Orchestrator:
         # brute-force, or a confirmed breach), give it a direct containment order —
         # the model otherwise narrates the finding instead of acting. A bare
         # foreign connection is NOT enough; blue must catch an actual attack.
-        if self.state.blue_contain_turn is None:
+        if not self.observe and self.state.blue_contain_turn is None:
             attackers = self._blue_confirmed_attackers()
             if attackers:
                 ip = attackers[0]
@@ -555,6 +558,36 @@ class Orchestrator:
             return None
         return self.state.blue_detect_turn - self.state.red_access_turn
 
+    def _outcome_brief(self, side: str) -> str:
+        """Factual, per-side result of the finished episode, for causal reflection.
+
+        States who won and how (containment/detection turn, access turn) without
+        naming *why* a given action was loud — the agent must draw that link
+        itself (no hints to red; see the project's 'no seeding' decision).
+        """
+        s = self.state
+        contain, detect, access = s.blue_contain_turn, s.blue_detect_turn, s.red_access_turn
+
+        if s.blue_victory:
+            if contain is not None:
+                how = f"contained your source IP at turn {contain}, cutting off your access before you reached the objective" \
+                    if side == "red" else f"containing the attacker's IP at turn {contain} before it reached the objective"
+            else:
+                how = f"detected your access at turn {detect}" if side == "red" \
+                    else f"detecting the breach at turn {detect}"
+            return (f"OUTCOME: You (red) LOST this episode. Blue {how}."
+                    if side == "red"
+                    else f"OUTCOME: You (blue) WON this episode by {how}.")
+
+        if s.red_captured_flag:
+            return (f"OUTCOME: You (red) WON this episode — reached the objective at turn {access}, "
+                    f"and blue failed to detect or contain you in time."
+                    if side == "red"
+                    else f"OUTCOME: You (blue) LOST this episode — red reached the objective at turn {access} "
+                    f"and you did not detect or contain it in time.")
+
+        return "OUTCOME: Stalemate — neither side decisively won within the turn limit."
+
     def _resolve_outcome(self) -> Optional[str]:
         """Decide the graded winner from access/detection timing, or None.
 
@@ -674,8 +707,8 @@ class Orchestrator:
         print("\nSimulation ended. Agents are now reflecting on the battle...")
         red_history = [h for h in self.state.history if h.get("role") == "red"]
         blue_history = [h for h in self.state.history if h.get("role") == "blue"]
-        red_lesson = self.red_agent.summarize_experience(red_history)
-        blue_lesson = self.blue_agent.summarize_experience(blue_history)
+        red_lesson = self.red_agent.summarize_experience(red_history, self._outcome_brief("red"))
+        blue_lesson = self.blue_agent.summarize_experience(blue_history, self._outcome_brief("blue"))
 
         if red_lesson:
             knowledge["red"].append(red_lesson)

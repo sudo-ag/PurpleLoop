@@ -549,3 +549,46 @@ def test_blue_text_response_before_confirmed_evidence_retries_for_tool_call():
     blue_tool_calls = [h for h in orch.state.history if h.get("role") == "blue" and "tool" in h]
     assert len(blue_tool_calls) == 1
     blue_agent.process_tool_call.assert_called_once_with(tool_call)
+
+def test_outcome_brief_red_containment_is_causal_and_factual():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
+    orch.state.blue_victory = True
+    orch.state.blue_contain_turn = 1
+    orch.state.contained_ip = "192.168.64.11"
+
+    red = orch._outcome_brief("red")
+    assert "LOST" in red and "contained" in red and "turn 1" in red
+    # No hint about WHICH action was loud — red must infer scan -> caught itself.
+    assert "scan" not in red.lower() and "brute" not in red.lower()
+
+    blue = orch._outcome_brief("blue")
+    assert "WON" in blue and "turn 1" in blue
+
+def test_outcome_brief_red_win_and_stalemate():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
+    orch.state.red_captured_flag = True
+    orch.state.red_access_turn = 7
+    assert "WON" in orch._outcome_brief("red") and "turn 7" in orch._outcome_brief("red")
+    assert "LOST" in orch._outcome_brief("blue")
+
+    fresh = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
+    assert "Stalemate" in fresh._outcome_brief("red")
+
+def test_observe_mode_holds_containment_no_real_drop():
+    # Blue in observe mode must NOT fire the real iptables DROP — red keeps going.
+    mock_executor = MagicMock(spec=ToolExecutor)
+    blue = Agent(role="blue", executor=mock_executor, observe=True)
+    out = json.loads(blue.process_tool_call(
+        {'function': {'name': 'contain_attacker', 'arguments': {'ip': '192.168.64.11'}}}
+    ))
+    assert out["status"] == "observed" and out["contained"] is False
+    mock_executor.contain_attacker.assert_not_called()
+
+def test_observe_mode_suppresses_containment_order():
+    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), observe=True)
+    orch._blue_confirmed_attackers = lambda: ["192.168.64.11"]
+    assert "CONTAIN" not in orch._blue_tool_guidance()
+
+    aggressive = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
+    aggressive._blue_confirmed_attackers = lambda: ["192.168.64.11"]
+    assert "CONTAIN" in aggressive._blue_tool_guidance()  # default still orders it

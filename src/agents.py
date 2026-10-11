@@ -202,6 +202,18 @@ before you get in. Prefer a QUIETER path to a credential or a foothold:
 """
 
 
+BLUE_OBSERVE_ADDENDUM = """
+
+OBSERVATION / TRAINING MODE:
+This run, your job is to LEARN the attacker's techniques, not to end the fight.
+Keep investigating thoroughly and report precisely what you observe — which tools
+the attacker uses, from which IP, in what order, and what each reveals. Do NOT
+contain the attacker: containment is held so the attacker proceeds and you get to
+witness its full approach. Your value this run is the quality of what you detect
+and understand, so you can defend against it next time.
+"""
+
+
 def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
     """Recover a tool call the model emitted as JSON *text* instead of a
     structured tool_call, so the turn isn't silently wasted.
@@ -234,7 +246,7 @@ def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
 
 
 class Agent:
-    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None):
+    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False):
         self.role = role
         self.executor = executor
         self.model = model
@@ -253,6 +265,12 @@ class Agent:
         self.earned = earned and role.lower() == "red"
         if self.earned:
             self.system_prompt += RED_EARNED_ADDENDUM
+        # Observation/training mode: blue investigates and learns but holds
+        # containment, so the attacker proceeds and blue witnesses more of the
+        # kill chain than a turn-1 block would ever reveal. Opt-in; blue only.
+        self.observe = observe and role.lower() == "blue"
+        if self.observe:
+            self.system_prompt += BLUE_OBSERVE_ADDENDUM
         # Initialize Ollama client with a specific timeout for stability
         self.client = Client(timeout=600.0)
 
@@ -487,6 +505,12 @@ class Agent:
 
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")
+            if self.observe:
+                # Training mode: don't actually firewall the attacker — let it
+                # proceed so blue can keep observing. Reported as a held action.
+                return json.dumps({"tool": "contain_attacker", "status": "observed",
+                                   "contained": False, "target_ip": ip,
+                                   "note": "observe mode: containment held for training"})
             try:
                 result = self.executor.contain_attacker(ip)
                 return json.dumps(result)
@@ -495,16 +519,32 @@ class Agent:
 
         return "Unsupported tool call."
 
-    def summarize_experience(self, history: List[Dict[str, Any]]) -> Optional[str]:
+    def summarize_experience(self, history: List[Dict[str, Any]], outcome: Optional[str] = None) -> Optional[str]:
         """
         Analyzes the simulation history and returns a single concise lesson learned.
+
+        When `outcome` (a factual result brief from the orchestrator) is given, the
+        reflection is grounded in cause and effect: the agent sees how the episode
+        ended and which of its own actions came right before, so it can learn
+        "action X led to outcome Y" instead of a context-free platitude.
         """
         history_str = "\n".join([
             f"{h.get('role', 'unknown')}: {h.get('tool', h.get('action', ''))} -> {h.get('output', h.get('content', ''))}"
             for h in history
         ])
 
-        prompt = f"Analyze this battle history:\n\n{history_str}\n\nWhat is the single most important lesson learned from this simulation that you should remember for next time? Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
+        if outcome:
+            prompt = (
+                f"{outcome}\n\n"
+                f"Your actions this episode, in order (the last line is what you were "
+                f"doing when the episode ended):\n\n{history_str}\n\n"
+                "Draw the single most important CAUSAL lesson: name the specific action "
+                "that led to this outcome and what to do differently next time, in the form "
+                "'<action> led to <consequence>, so next time <change>'. "
+                "Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
+            )
+        else:
+            prompt = f"Analyze this battle history:\n\n{history_str}\n\nWhat is the single most important lesson learned from this simulation that you should remember for next time? Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
 
         try:
             response = self.client.chat(
