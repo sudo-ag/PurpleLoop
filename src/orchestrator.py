@@ -474,28 +474,43 @@ class Orchestrator:
 
         return None
 
-    def _executor_supports(self, name: str) -> bool:
-        return hasattr(self.red_agent.executor, name) and callable(getattr(self.red_agent.executor, name))
+    @staticmethod
+    def _executor_supports(executor: Any, name: str) -> bool:
+        return hasattr(executor, name) and callable(getattr(executor, name))
+
+    def _executors(self) -> List[Any]:
+        """Red's and blue's executors, de-duplicated by identity (they are the
+        same object for the mock / single-box case, two objects once split)."""
+        unique: List[Any] = []
+        for ex in (self.red_agent.executor, self.blue_agent.executor):
+            if all(ex is not seen for seen in unique):
+                unique.append(ex)
+        return unique
 
     def run_simulation(self, max_turns: int = 20) -> Optional[str]:
         """
         Runs the simulation until a victory condition is met or max_turns is reached.
         """
-        # 1. Establish persistent connection (best-effort; a stateless executor can skip this)
-        if self._executor_supports("connect"):
-            try:
-                self.red_agent.executor.connect()
-            except Exception as e:
-                print(f"Failed to establish initial connection: {e}")
-                # Non-fatal for the sim — fall back to per-call reconnect behavior in the executor.
+        # 1. Establish connections (best-effort; a stateless executor can skip
+        # this). Red and blue may share one executor (mock / single box) or be two
+        # (red via the jump host, blue direct); connect each distinct one.
+        for ex in self._executors():
+            if self._executor_supports(ex, "connect"):
+                try:
+                    ex.connect()
+                except Exception as e:
+                    print(f"Failed to establish initial connection: {e}")
+                    # Non-fatal — fall back to per-call reconnect in the executor.
 
-        # 1b. Scope blue's log analysis to THIS run. Without it, blue reads the
-        # box's months-old provisioning history (flag setup, etc.) and declares
-        # an instant BREACH before red acts. Anchored to the target's own clock
-        # to avoid controller/target skew.
-        if self._executor_supports("mark_analysis_window"):
+        # 1b. Scope BLUE's log analysis to THIS run. Blue reads the target's logs,
+        # so the window belongs to blue's executor. Without it, blue reads the
+        # box's months-old provisioning history (flag setup, etc.) and declares an
+        # instant BREACH before red acts. Anchored to the target's own clock to
+        # avoid controller/target skew.
+        blue_executor = self.blue_agent.executor
+        if self._executor_supports(blue_executor, "mark_analysis_window"):
             try:
-                self.red_agent.executor.mark_analysis_window()
+                blue_executor.mark_analysis_window()
             except Exception as e:
                 print(f"Could not set analysis window (continuing): {e}")
 
@@ -514,12 +529,13 @@ class Orchestrator:
                 # (Actual lesson summarization happens at the end,
                 # but we could add intermediate checkpoints here if desired)
         finally:
-            # 3. Always disconnect (best-effort)
-            if self._executor_supports("disconnect"):
-                try:
-                    self.red_agent.executor.disconnect()
-                except Exception as e:
-                    print(f"Warning: executor disconnect failed: {e}")
+            # 3. Always disconnect (best-effort), each distinct executor.
+            for ex in self._executors():
+                if self._executor_supports(ex, "disconnect"):
+                    try:
+                        ex.disconnect()
+                    except Exception as e:
+                        print(f"Warning: executor disconnect failed: {e}")
 
         # 4. Learn from the battle
         print("\nSimulation ended. Agents are now reflecting on the battle...")

@@ -20,13 +20,23 @@ def dashboard_enabled() -> bool:
     return os.getenv("DISABLE_DASHBOARD", "1").lower() not in ("1", "true", "yes", "on")
 
 def main() -> None:
-    # Credentials - defaults for Metasploitable 3
-    host = os.getenv("TARGET_HOST", "192.168.64.10")
+    # The target is the box blue defends and red attacks (Metasploitable3).
+    host = os.getenv("TARGET_HOST", "192.168.64.12")
     user = os.getenv("TARGET_USER", "vagrant")
     pwd = os.getenv("TARGET_PWD", "vagrant")
+    # Red attacks the target FROM its own box (Kali) via this jump host, so the
+    # target sees the attacker's IP, not the controller's. Unset RED_JUMP_HOST to
+    # fall back to a single-box run (red connects directly, like blue).
+    jump_host = os.getenv("RED_JUMP_HOST", "192.168.64.11")
+    jump_user = os.getenv("RED_JUMP_USER", "kali")
+    jump_pwd = os.getenv("RED_JUMP_PWD", "kali")
     model = os.getenv("MODEL", "llama3.2:latest")
 
-    print(f"Starting simulation against {host} as {user} using model {model}...")
+    if host != "mock" and jump_host:
+        print(f"Starting simulation: red attacks {user}@{host} via jump "
+              f"{jump_user}@{jump_host}; blue defends {host} directly. Model {model}.")
+    else:
+        print(f"Starting simulation against {host} as {user} using model {model}...")
 
     dashboard_process = None
     use_dashboard = dashboard_enabled()
@@ -38,15 +48,24 @@ def main() -> None:
         time.sleep(2)
 
     try:
-        # Initialize Executor
+        # Blue defends the target directly; red attacks it from the jump host so
+        # its traffic arrives with the jump's source IP. With no jump host both
+        # roles share one direct executor (single-box / legacy behavior).
         if host == "mock":
-            executor = MockExecutor()
+            red_executor = blue_executor = MockExecutor()
         else:
-            executor = ToolExecutor(host=host, user=user, pwd=pwd)
+            blue_executor = ToolExecutor(host=host, user=user, pwd=pwd)
+            if jump_host:
+                red_executor = ToolExecutor(
+                    host=host, user=user, pwd=pwd,
+                    jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
+                )
+            else:
+                red_executor = blue_executor
 
         # Initialize Agents
-        red = Agent(role="red", executor=executor, model=model)
-        blue = Agent(role="blue", executor=executor, model=model)
+        red = Agent(role="red", executor=red_executor, model=model)
+        blue = Agent(role="blue", executor=blue_executor, model=model)
 
         # Initialize Orchestrator
         dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8000") if use_dashboard else None
