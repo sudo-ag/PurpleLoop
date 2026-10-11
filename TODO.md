@@ -113,7 +113,7 @@ the next turn). The scoreboard now reflects reality.
 
 ## Current direction — autonomous learning arena
 
-Pivot (now that a capable model, e.g. `gpt-oss:120b-cloud`, can drive it): stop
+Pivot (now that a capable model, e.g. `gemma4:31b-cloud`, can drive it): stop
 scripting the agents' *steps*; script the *game* (goal + scoring + guardrails) and
 let behavior emerge across many self-run episodes. The flag was scaffolding to
 validate the pipeline on a weak model; it stays as a regression toggle.
@@ -154,3 +154,64 @@ happening and responds. Open objectives + open tools; minimal tactic steering.
 **Guardrails:** sandboxed owned target; keep `FORBIDDEN_KEYWORDS`; reversible /
 cleaned actions; turn caps; per-episode reset so learning measures strategy, not
 box drift.
+
+---
+
+## Session 2026-10-11 — learning loop live; "red trains blue" validated
+
+Build-order step 4 (learning loop) is now working end to end on the real boxes
+with `gemma4:31b-cloud`. Three changes landed and are tested (102 passing) + live-verified:
+
+- **Causal reflection** (`Agent.summarize_experience` + `Orchestrator._outcome_brief`):
+  reflection is now grounded in the episode's outcome and the agent's own last
+  action, so lessons are `<action> led to <consequence>, so next time <change>`
+  instead of context-free. Red's lessons flipped from "enumerate harder" (wrong)
+  to "scan → contained, go quieter" (correct).
+- **Blue observe/training mode** (`--observe`, blue-only): blue investigates and
+  *learns* but holds containment (no real iptables DROP), so red runs its full
+  kill chain and blue witnesses stages a turn-1 block would never reveal. This is
+  blue's curriculum — a scaffold, not a permanent nerf.
+- **Auth-sensor fix** (the big one): the PLWATCH connection-logging rule was
+  unscoped (`INPUT ... NEW -j LOG`), logging every packet (loopback, broadcast,
+  DNS) → `kern.log`/`syslog` hit 515 MB → rsyslog wedged → `auth.log` went dead →
+  blue was blind to red's brute-force/login/sudo. Scoped the rule to
+  `! -i lo -p tcp --syn`; also fixed `_parse_auth_log` to report an empty read as
+  `UNAVAILABLE` (sensor gap) instead of `CLEAN` (which had hidden the outage).
+
+**Result that matters.** Before the fix, a 5-episode observe batch: blue blind
+(`blue_detect_turn` null ×5), all 5 lessons identical ("block the scanner"). After
+the fix: blue detected the breach 3/3 times it completed (`detect_turn` 9/11/11),
+and **blue's lessons broadened to a new kill-chain stage** — "overly permissive
+sudo for `vagrant` → exfiltration → restrict sudo / least privilege." The
+thesis — red's gauntlet teaches blue new defenses — now holds in practice.
+
+### New frontier / next steps (ranked)
+1. **Give blue a response for the stage it now sees.** Blue learned the
+   privesc/exfil lesson but can only recommend it, not act — a "harden sudo" /
+   remediation action (dial 3, D1 = remediator) would let blue *apply* what it
+   learned. This is where D1 (remediator vs. listener) stops being theoretical.
+2. **Separate target identities (step 1b).** Real containment needs red as a
+   distinct account so blue can lock the attacker without locking itself — and so
+   observe-mode can eventually ramp response back up per-technique.
+3. **Detection-credit scoring (the LLM-judge item).** In observe mode blue can
+   "lose" the episode but succeed at the learning objective (detected the new
+   technique). Score "did blue detect the technique" separately from "did blue
+   win" so training signal isn't conflated with the scoreboard.
+4. **Reflection polish:** red occasionally reflects in *defender* voice ("the
+   defender should disable password auth") — tighten the red prompt to attacker
+   self-improvement.
+
+### Visibility MVP (parked, for the capstone)
+Decided: kill the live WebSocket dashboard (it was blank because
+`_notify_dashboard` only POSTs to a URL that was never up / never persisted).
+Build a **static replay viewer** off persisted per-episode files instead — no
+server, no sockets. Prereq not yet done: persist a machine-readable per-turn
+timeline (`ep_NNN.json`); today only prose `ep_NNN.md` + coarse `episodes.jsonl`
+exist.
+
+### Gotchas carried forward
+- `gpt-oss:120b-cloud` is **gone** from the account; current strong cloud model is
+  `gemma4:31b-cloud`. `minimax-m2.5:cloud` / `kimi-k2.5:cloud` are stale/retired.
+- The unscoped PLWATCH rule can refill `kern.log`/`syslog` to hundreds of MB and
+  wedge rsyslog; if auth logging ever looks dead again, check those file sizes and
+  `sudo truncate -s 0` them + `sudo service rsyslog restart`.
