@@ -26,6 +26,10 @@ _RED_PHASE_GUIDANCE = {
 # the only tools that surface flag-file access (the breach signal), so they
 # lead; the rest give context. Blue is nudged toward the first tool it has not
 # run yet, which stops the 3B model from repeating one tool every turn.
+# A source with at least this many failed SSH auths in the window is brute-forcing
+# (evidence of malice), not just connecting.
+_BRUTE_FORCE_THRESHOLD = 5
+
 _BLUE_TOOL_PRIORITY = [
     "investigate_logs",
     "investigate_connections",
@@ -291,11 +295,20 @@ class Orchestrator:
                 used.append(name)
         return used
 
-    def _blue_seen_attacker_ips(self) -> List[str]:
-        """Attacker IPs blue has already observed in its own tool output
-        (suspicious_ips), excluding blue's own control session IP."""
+    def _blue_confirmed_attackers(self) -> List[str]:
+        """Attacker IPs blue has EVIDENCE OF MALICE for in its own tool output —
+        a port scan, a brute-force spike, or a confirmed flag access — not merely
+        a foreign connection. Excludes blue's own control IP. Containing on mere
+        presence is trivial in a two-box setup; blue must earn it with evidence.
+        """
         own = getattr(getattr(self.blue_agent, "executor", None), "control_source_ip", None)
-        seen: List[str] = []
+        confirmed: List[str] = []
+
+        def add(ips):
+            for ip in ips or []:
+                if ip and ip != own and ip not in confirmed:
+                    confirmed.append(ip)
+
         for entry in self.state.history:
             if entry.get("role") != "blue":
                 continue
@@ -308,25 +321,31 @@ class Orchestrator:
                 continue
             if not isinstance(data, dict):
                 continue
-            for ip in (data.get("suspicious_ips") or []):
-                if ip != own and ip not in seen:
-                    seen.append(ip)
-        return seen
+            tool = data.get("tool")
+            if tool == "investigate_connections":
+                add(data.get("port_scanners"))                     # scanning = malice
+            elif tool == "investigate_logs":
+                if (data.get("failed_attempts") or 0) >= _BRUTE_FORCE_THRESHOLD:
+                    add(data.get("suspicious_ips"))                # brute-force spike
+                if data.get("flag_access_detected"):
+                    add(data.get("suspicious_ips"))                # confirmed breach
+        return confirmed
 
     def _blue_tool_guidance(self) -> str:
-        # Once blue has actually observed an attacker IP, stop steering it to more
-        # investigation and give it a direct containment order — the weak model
-        # otherwise narrates the finding instead of acting on it.
+        # Once blue has EVIDENCE of malice from an attacker IP (a scan, a
+        # brute-force, or a confirmed breach), give it a direct containment order —
+        # the model otherwise narrates the finding instead of acting. A bare
+        # foreign connection is NOT enough; blue must catch an actual attack.
         if self.state.blue_contain_turn is None:
-            attackers = self._blue_seen_attacker_ips()
+            attackers = self._blue_confirmed_attackers()
             if attackers:
                 ip = attackers[0]
                 return (
-                    f"Blue guidance: You have IDENTIFIED attacker IP {ip} — it appears in "
-                    f"suspicious_ips and is NOT your own control session. Stop investigating "
-                    f"and CONTAIN it now: call `contain_attacker` with ip=\"{ip}\". Blocking "
-                    f"the attacker before it reads the flag wins the engagement. Do this "
-                    f"before any other tool."
+                    f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
+                    f"scan, brute-force, or confirmed access — not just a connection). "
+                    f"Stop investigating and CONTAIN it now: call `contain_attacker` with "
+                    f"ip=\"{ip}\". Containing the attacker before it reaches its objective "
+                    f"wins the engagement. Do this before any other tool."
                 )
 
         used = self._blue_tools_used()

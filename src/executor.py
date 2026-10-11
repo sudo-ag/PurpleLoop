@@ -1218,7 +1218,7 @@ class ToolExecutor:
             if dpt:
                 entry["ports"].add(dpt.group(1))
 
-        suspicious_ips = sorted(per_src)
+        foreign_ips = sorted(per_src)
         port_scanners = sorted(
             ip for ip, e in per_src.items()
             if len(e["ports"]) >= self._SCAN_PORT_THRESHOLD
@@ -1227,17 +1227,20 @@ class ToolExecutor:
             ip: {"connections": e["count"], "distinct_ports": len(e["ports"])}
             for ip, e in per_src.items()
         }
+        # A mere connection is not proof of malice (anything could dial a port).
+        # The actionable signal is a SCAN — one source touching many ports — so
+        # suspicious_ips holds scanners only; foreign_ips is the softer "seen" set.
+        suspicious_ips = port_scanners
 
         if port_scanners:
             summary = (
                 f"Inbound network recon detected: {', '.join(port_scanners)} "
-                f"probed many ports (likely port scan). Foreign sources: "
-                f"{', '.join(suspicious_ips)}."
+                f"probed many ports (likely port scan)."
             )
-        elif suspicious_ips:
+        elif foreign_ips:
             summary = (
-                f"Foreign inbound connections from {', '.join(suspicious_ips)} "
-                f"({total} new connections logged)."
+                f"Foreign inbound connections from {', '.join(foreign_ips)} "
+                f"({total} new connections), but no scan pattern yet — monitor."
             )
         else:
             summary = "No foreign inbound connections in the window."
@@ -1247,14 +1250,21 @@ class ToolExecutor:
             "logging_active": armed,
             "connections": total,
             "sources": sources,
+            "foreign_ips": foreign_ips,
             "suspicious_ips": suspicious_ips,
             "port_scanners": port_scanners,
             "summary": summary,
-            "assessment": "SUSPICIOUS" if suspicious_ips else "CLEAN",
+            "assessment": (
+                "SUSPICIOUS" if port_scanners
+                else "MONITOR" if foreign_ips
+                else "CLEAN"
+            ),
             "recommendation": (
-                "An attacker is probing the host over the network. Identify the "
-                "source IP and contain it before it earns a foothold."
-                if suspicious_ips else
+                "An attacker is scanning the host. Identify the source IP and "
+                "contain it before it earns a foothold."
+                if port_scanners else
+                "Foreign connections seen but no clear attack yet — keep watching."
+                if foreign_ips else
                 "No foreign inbound connections seen."
             ),
         }

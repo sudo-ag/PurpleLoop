@@ -330,6 +330,21 @@ def test_connections_flags_port_scan_from_foreign_ip():
     assert result["assessment"] == "SUSPICIOUS"
 
 
+def test_connections_foreign_without_scan_is_monitor_not_suspicious():
+    # A couple of connections from a foreign IP (below the scan threshold) is not
+    # actionable malice — it must NOT land in suspicious_ips (blue mustn't contain
+    # on mere presence).
+    executor = _executor()
+    executor._conn_logging = True
+    executor.control_source_ip = "192.168.64.1"
+    raw = _plwatch("192.168.64.11", 22) + "\n" + _plwatch("192.168.64.11", 80)
+    result = executor._parse_connections(raw)
+    assert result["foreign_ips"] == ["192.168.64.11"]
+    assert result["suspicious_ips"] == []
+    assert result["port_scanners"] == []
+    assert result["assessment"] == "MONITOR"
+
+
 def test_connections_clean_when_only_self_and_loopback():
     executor = _executor()
     executor._conn_logging = True

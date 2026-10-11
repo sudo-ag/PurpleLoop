@@ -376,7 +376,7 @@ def test_red_phase_jumps_to_flag_read_on_confirmed_root():
     assert "passwordless root" in summary
 
 
-def test_blue_guidance_orders_containment_once_attacker_ip_seen():
+def test_blue_guidance_orders_containment_only_with_malice_evidence():
     red_agent = MagicMock(spec=Agent)
     red_agent.executor = MagicMock()
     red_agent.executor.jump_host = "192.168.64.11"
@@ -384,20 +384,40 @@ def test_blue_guidance_orders_containment_once_attacker_ip_seen():
     blue_agent.executor = MagicMock()
     blue_agent.executor.control_source_ip = "192.168.64.1"
     orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {
-            "role": "blue",
-            "tool": {"function": {"name": "investigate_logs", "arguments": {}}},
-            "output": '{"tool": "investigate_logs", "suspicious_ips": ["192.168.64.11"]}',
-        },
-    ]
 
+    # A bare foreign connection (no scan) must NOT trigger a containment order.
+    orch.state.history = [{
+        "role": "blue",
+        "tool": {"function": {"name": "investigate_connections", "arguments": {}}},
+        "output": '{"tool": "investigate_connections", "foreign_ips": ["192.168.64.11"], "suspicious_ips": [], "port_scanners": []}',
+    }]
+    assert "contain_attacker" not in orch._build_state_summary("blue")
+
+    # A port scan IS evidence of malice → blue is ordered to contain it.
+    orch.state.history.append({
+        "role": "blue",
+        "tool": {"function": {"name": "investigate_connections", "arguments": {}}},
+        "output": '{"tool": "investigate_connections", "port_scanners": ["192.168.64.11"], "suspicious_ips": ["192.168.64.11"]}',
+    })
     summary = orch._build_state_summary("blue")
-
     assert "contain_attacker" in summary
-    assert '192.168.64.11' in summary
-    # Its own control IP must never be offered as a containment target.
-    assert "192.168.64.1\"" not in summary.replace("192.168.64.11", "")
+    assert "192.168.64.11" in summary
+
+
+def test_blue_guidance_contains_on_brute_force_spike():
+    red_agent = MagicMock(spec=Agent)
+    red_agent.executor = MagicMock()
+    red_agent.executor.jump_host = "192.168.64.11"
+    blue_agent = MagicMock(spec=Agent)
+    blue_agent.executor = MagicMock()
+    blue_agent.executor.control_source_ip = "192.168.64.1"
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [{
+        "role": "blue",
+        "tool": {"function": {"name": "investigate_logs", "arguments": {}}},
+        "output": '{"tool": "investigate_logs", "failed_attempts": 12, "suspicious_ips": ["192.168.64.11"]}',
+    }]
+    assert "contain_attacker" in orch._build_state_summary("blue")
 
 
 def test_blue_guidance_defaults_to_logs_heartbeat():
