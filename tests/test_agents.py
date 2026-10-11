@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock
-from src.agents import Agent, RED_EVASION_ADDENDUM, _coerce_text_tool_call
+from src.agents import Agent, RED_EVASION_ADDENDUM, RED_EARNED_ADDENDUM, _coerce_text_tool_call
 
 
 def test_recovers_parameters_key_format():
@@ -63,3 +63,39 @@ def test_blue_never_gets_evasion_even_if_flag_set():
     blue = _mk("blue", evade=True)
     assert blue.evade is False
     assert RED_EVASION_ADDENDUM not in blue.system_prompt
+
+
+# --- red earned foothold (two-channel) ------------------------------------
+
+
+def test_earned_red_gets_attacker_channel_and_addendum():
+    atk = MagicMock()
+    red = Agent(role="red", executor=MagicMock(), model="m", earned=True, attacker_executor=atk)
+    assert red.earned is True
+    assert red.attacker_executor is atk
+    assert RED_EARNED_ADDENDUM in red.system_prompt
+    names = [t["function"]["name"] for t in red.tools]
+    assert "run_on_attacker" in names and "execute_command" in names
+
+
+def test_non_earned_red_has_no_attacker_channel():
+    red = Agent(role="red", executor=MagicMock(), model="m")
+    assert red.earned is False
+    assert red.attacker_executor is None
+    assert RED_EARNED_ADDENDUM not in red.system_prompt
+    assert "run_on_attacker" not in [t["function"]["name"] for t in red.tools]
+
+
+def test_run_on_attacker_routes_to_attacker_executor():
+    atk = MagicMock()
+    atk.execute.return_value = "login: vagrant password: vagrant"
+    red = Agent(role="red", executor=MagicMock(), model="m", earned=True, attacker_executor=atk)
+    out = red.process_tool_call({"function": {"name": "run_on_attacker", "arguments": {"command": "hydra ..."}}})
+    atk.execute.assert_called_once_with("hydra ...")
+    assert "vagrant" in out
+
+
+def test_blue_never_gets_attacker_channel_or_earned():
+    blue = Agent(role="blue", executor=MagicMock(), model="m", earned=True, attacker_executor=MagicMock())
+    assert blue.earned is False
+    assert blue.attacker_executor is None

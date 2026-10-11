@@ -133,10 +133,12 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
 
 def _build_agents(
     host: str, model: str, user: str, pwd: str,
-    jump_host: Optional[str], jump_user: str, jump_pwd: str, evade: bool,
+    jump_host: Optional[str], jump_user: str, jump_pwd: str,
+    evade: bool, earned: bool,
 ) -> "tuple[Agent, Agent]":
     """Build red/blue once; they are reused across episodes so their experience
     (via knowledge.json) compounds."""
+    attacker_ex: Any = None
     if host == "mock":
         red_ex: Any = MockExecutor()
         blue_ex: Any = red_ex
@@ -147,9 +149,14 @@ def _build_agents(
                 host=host, user=user, pwd=pwd,
                 jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
             )
+            if earned:
+                attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
         else:
             red_ex = blue_ex
-    red = Agent(role="red", executor=red_ex, model=model, evade=evade)
+    red = Agent(
+        role="red", executor=red_ex, model=model,
+        evade=evade, earned=earned, attacker_executor=attacker_ex,
+    )
     blue = Agent(role="blue", executor=blue_ex, model=model)
     return red, blue
 
@@ -165,6 +172,7 @@ def run_episodes(
     jump_user: str = "kali",
     jump_pwd: str = "kali",
     evade: bool = False,
+    earned: bool = False,
     detect_within_turns: int = 3,
     reset_fn: Optional[ResetFn] = None,
     reset: bool = True,
@@ -176,7 +184,7 @@ def run_episodes(
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
-    red, blue = _build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade)
+    red, blue = _build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned)
 
     cards: List[Dict[str, Any]] = []
     for i in range(1, n + 1):
@@ -215,14 +223,15 @@ def main() -> None:
     p.add_argument("--jump-user", default="kali")
     p.add_argument("--jump-pwd", default="kali")
     p.add_argument("--evade", action="store_true")
+    p.add_argument("--earned", action="store_true", help="Red must brute-force creds from its attacker box first")
     p.add_argument("--detect-within-turns", type=int, default=3)
     p.add_argument("--no-reset", action="store_true", help="Skip the scripted between-episode reset")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
         user=a.user, pwd=a.pwd, jump_host=a.jump_host, jump_user=a.jump_user,
-        jump_pwd=a.jump_pwd, evade=a.evade, detect_within_turns=a.detect_within_turns,
-        reset=not a.no_reset,
+        jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned,
+        detect_within_turns=a.detect_within_turns, reset=not a.no_reset,
     )
 
 

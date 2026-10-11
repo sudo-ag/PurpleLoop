@@ -578,11 +578,16 @@ class Orchestrator:
         return hasattr(executor, name) and callable(getattr(executor, name))
 
     def _executors(self) -> List[Any]:
-        """Red's and blue's executors, de-duplicated by identity (they are the
-        same object for the mock / single-box case, two objects once split)."""
+        """Distinct executors to manage: red's target channel, red's attacker
+        box (earned foothold), and blue's — de-duplicated by identity (several
+        collapse to one for the mock / single-box case)."""
         unique: List[Any] = []
-        for ex in (self.red_agent.executor, self.blue_agent.executor):
-            if all(ex is not seen for seen in unique):
+        for ex in (
+            self.red_agent.executor,
+            getattr(self.red_agent, "attacker_executor", None),
+            self.blue_agent.executor,
+        ):
+            if ex is not None and all(ex is not seen for seen in unique):
                 unique.append(ex)
         return unique
 

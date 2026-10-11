@@ -33,6 +33,9 @@ def main() -> None:
     model = os.getenv("MODEL", "llama3.2:latest")
     # Opt-in: red cleans its tracks (log tampering) after reading the flag.
     red_evasion = os.getenv("RED_EVASION", "0").lower() in ("1", "true", "yes", "on")
+    # Opt-in: red starts with no target creds and must brute-force them from its
+    # attacker box (Kali) first. Requires a jump host (red's attacker box).
+    red_earned = os.getenv("RED_EARNED", "0").lower() in ("1", "true", "yes", "on")
 
     if host != "mock" and jump_host:
         print(f"Starting simulation: red attacks {user}@{host} via jump "
@@ -53,6 +56,7 @@ def main() -> None:
         # Blue defends the target directly; red attacks it from the jump host so
         # its traffic arrives with the jump's source IP. With no jump host both
         # roles share one direct executor (single-box / legacy behavior).
+        red_attacker_executor = None
         if host == "mock":
             red_executor = blue_executor = MockExecutor()
         else:
@@ -62,11 +66,20 @@ def main() -> None:
                     host=host, user=user, pwd=pwd,
                     jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
                 )
+                # Earned foothold: red also gets a direct channel to its attacker
+                # box (the jump host) to run recon / hydra from.
+                if red_earned:
+                    red_attacker_executor = ToolExecutor(
+                        host=jump_host, user=jump_user, pwd=jump_pwd,
+                    )
             else:
                 red_executor = blue_executor
 
         # Initialize Agents
-        red = Agent(role="red", executor=red_executor, model=model, evade=red_evasion)
+        red = Agent(
+            role="red", executor=red_executor, model=model,
+            evade=red_evasion, earned=red_earned, attacker_executor=red_attacker_executor,
+        )
         blue = Agent(role="blue", executor=blue_executor, model=model)
 
         # Initialize Orchestrator
