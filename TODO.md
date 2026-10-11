@@ -92,9 +92,14 @@ the next turn). The scoreboard now reflects reality.
       red and blue are distinct by source IP and blue filters its own session.
       Remaining for real containment: red as a *distinct target account* (not
       `vagrant`) so blue can lock the attacker without locking itself.
-- [ ] **Step 1c — blue's first response action** (dial 3). One reversible action
-      (`contain_session` / `lock_account` / `block_ip`); blue wins by containing
-      the attacker (from `.11`) before/at the objective, not just reporting it.
+- [x] **Step 1c — blue's first response action** (dial 3). Done: blue can
+      `contain_attacker(ip)` — a reversible iptables DROP on the attacker's source
+      IP — and wins by containing the attacker (`.11`) before it reaches the
+      objective. Scored as prevention (containment-before-access) ahead of
+      detection; per-turn guidance issues a direct contain order once blue has
+      observed the attacker IP. Live-verified prevention win; rule flushed at
+      teardown. (Leans the D1 bias toward **listener** — revisit before the
+      response toolset grows further.)
 - [ ] **Step 2 — earned escalation** (dial 2). Flip `RED_FOOTHOLD` to earned:
       red cracks a weak SW-roster account with hydra, then escalates. (Needs a
       stronger model than llama3.2 to drive reliably.)
