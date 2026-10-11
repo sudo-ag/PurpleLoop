@@ -273,6 +273,10 @@ class ToolExecutor:
         # None = no scoping (full history), which is the default for unit tests.
         self.analysis_since: Optional[float] = None
         self._analysis_year: int = datetime.datetime.now().year
+        # The source IP of blue's own control session on the target, so blue can
+        # tell its own management traffic from the attacker's. Detected at
+        # mark_analysis_window(); None means "unknown, treat every login as other".
+        self.control_source_ip: Optional[str] = None
         # Safety net: tear down the master if the orchestrator never calls
         # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
         atexit.register(self.disconnect)
@@ -547,8 +551,21 @@ class ToolExecutor:
             self.analysis_since = None
         if self.analysis_since is None:
             logger.warning("Could not read target clock; blue will see full log history.")
-            return
-        logger.info("Blue analysis window starts at target wall clock %s.", out)
+        else:
+            logger.info("Blue analysis window starts at target wall clock %s.", out)
+        self._detect_control_source_ip()
+
+    def _detect_control_source_ip(self) -> None:
+        """Record the source IP of blue's own control session on the target, so
+        its management logins aren't mistaken for the attacker. $SSH_CONNECTION is
+        'client_ip client_port server_ip server_port'."""
+        out = self.execute("echo $SSH_CONNECTION").strip()
+        first = out.split()[0] if out.split() else ""
+        if _find_all_ip(first):
+            self.control_source_ip = first
+            logger.info("Blue control session source IP: %s.", first)
+        else:
+            logger.warning("Could not determine blue's own source IP (%r).", out)
 
     def _within_window(self, line: str) -> bool:
         """True if a log line is in blue's analysis window (or no window is set)."""
@@ -683,30 +700,40 @@ class ToolExecutor:
                 events.append(evt)
             elif "Accepted password" in line or " Accepted " in line:
                 success_count += 1
-                evt["severity"] = "high"
-                evt["event"] = "Successful authentication"
-                for ip in _find_all_ip(line):
-                    ioc_ips.add(ip)
+                ips = _find_all_ip(line)
                 user = _find_user(line)
-                if user:
-                    ioc_users.add(user)
-                evt["note"] = "Successful login"
+                if self.control_source_ip and self.control_source_ip in ips:
+                    # Blue's own management session — not an intrusion.
+                    evt["severity"] = "informational"
+                    evt["event"] = "Blue control session login (self)"
+                    evt["note"] = f"Own management session from {self.control_source_ip} — ignored"
+                else:
+                    evt["severity"] = "high"
+                    evt["event"] = "Successful authentication"
+                    for ip in ips:
+                        ioc_ips.add(ip)
+                    if user:
+                        ioc_users.add(user)
+                    evt["note"] = "Successful login"
                 events.append(evt)
             elif "sudo:" in line and "COMMAND=" in line:
                 sudo_count += 1
-                evt["severity"] = "high"
-                evt["event"] = "Sudo command executed"
-                user = _find_user(line)
-                if user:
-                    ioc_users.add(user)
                 cmd = _find_command(line)
-                if cmd and ("flag" in cmd.lower() or "sensitive" in cmd.lower() or "passwd" in cmd.lower()):
-                    evt["severity"] = "critical"
-                    evt["note"] = f"Sensitive command executed via sudo: {cmd}"
-                    flag_access = True
-                else:
-                    evt["note"] = f"Sudo: {cmd}"
                 evt["indicator"] = "sudo_escalation"
+                if _is_sensitive_file_access(cmd):
+                    evt["severity"] = "critical"
+                    evt["event"] = "Sensitive file accessed via sudo"
+                    evt["note"] = f"Sensitive file accessed via sudo: {cmd}"
+                    flag_access = True
+                    user = _find_user(line)
+                    if user:
+                        ioc_users.add(user)
+                else:
+                    # Plain sudo (incl. blue's own stat/ls investigation and
+                    # vagrant's legitimate NOPASSWD use) — not a breach signal.
+                    evt["severity"] = "informational"
+                    evt["event"] = "Sudo command executed"
+                    evt["note"] = f"Sudo: {cmd}"
                 events.append(evt)
             elif "session opened" in line.lower():
                 evt["severity"] = "informational"
@@ -737,7 +764,7 @@ class ToolExecutor:
 
         assessment = (
             "BREACH" if flag_access
-            else "SUSPICIOUS" if (suspicious_count >= 2 or sudo_count > 0)
+            else "SUSPICIOUS" if suspicious_count >= 2
             else "MONITOR" if failed_count > 2
             else "CLEAN"
         )
@@ -797,17 +824,19 @@ class ToolExecutor:
             evt: Dict[str, Any] = {"raw": line}
             if "sudo:" in line and "COMMAND=" in line:
                 sudo_events += 1
-                evt["severity"] = "high"
-                evt["event"] = "Sudo command"
-                user = _find_user(line)
-                if user:
-                    ioc_users.add(user)
                 cmd = _find_command(line)
                 evt["command"] = cmd
-                if cmd and ("flag" in cmd.lower() or "sensitive" in cmd.lower()):
+                evt["event"] = "Sudo command"
+                if _is_sensitive_file_access(cmd):
                     evt["severity"] = "critical"
                     evt["flag_access"] = True
                     flag_access = True
+                    user = _find_user(line)
+                    if user:
+                        ioc_users.add(user)
+                else:
+                    # Plain sudo, incl. blue's own stat/ls investigation.
+                    evt["severity"] = "informational"
                 events.append(evt)
             elif "sshd" in line.lower() and "session" in line.lower():
                 evt["severity"] = "informational"
@@ -831,7 +860,7 @@ class ToolExecutor:
 
         assessment = (
             "BREACH" if flag_access
-            else "SUSPICIOUS" if sudo_events > 0
+            else "SUSPICIOUS" if suspicious_count >= 2
             else "CLEAN"
         )
         recommendation = (
@@ -1521,6 +1550,31 @@ def _find_command(text: str) -> Optional[str]:
     if m:
         return m.group(1)
     return None
+
+
+# Path fragments that mark a sudo command as touching something sensitive.
+_SENSITIVE_PATH_KEYWORDS = ("flag", "sensitive", "shadow", "passwd")
+
+# Verbs blue itself uses to INSPECT a sensitive file — metadata only, never a
+# read of contents. These must not be mistaken for an attacker reading the file,
+# or blue flags its own investigate_file_access (sudo stat/ls /root/flag.txt) as
+# the breach. An attacker's read/copy/write verb (cat, tee, cp, ...) is NOT here.
+_INSPECTION_VERBS = frozenset({
+    "stat", "ls", "file", "getfacl", "lsattr", "find", "readlink", "test", "dir",
+})
+
+
+def _is_sensitive_file_access(cmd: Optional[str]) -> bool:
+    """True if a sudo COMMAND reads or modifies a sensitive file's contents.
+    Blue's own metadata inspection (stat/ls/...) returns False, so blue never
+    scores its own investigation as a compromise."""
+    if not cmd:
+        return False
+    if not any(k in cmd.lower() for k in _SENSITIVE_PATH_KEYWORDS):
+        return False
+    tokens = cmd.split()
+    verb = tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
+    return verb not in _INSPECTION_VERBS
 
 
 def _parse_ps_line(line: str) -> Optional[Dict[str, Any]]:

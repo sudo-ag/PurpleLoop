@@ -177,11 +177,18 @@ def test_mark_analysis_window_reads_target_wall_clock():
     executor = _executor()
     # Target wall clock as syslog-style text, parsed in the same frame as log
     # lines so a controller/target timezone gap can't skew the window.
-    executor.execute = MagicMock(return_value="2026 Oct  8 22:22:16\n")
+    # Two reads: the wall clock for the window, then $SSH_CONNECTION for blue's
+    # own source IP.
+    executor.execute = MagicMock(side_effect=[
+        "2026 Oct  8 22:22:16\n",
+        "192.168.64.1 51000 192.168.64.12 22\n",
+    ])
     executor.mark_analysis_window()
     assert executor._analysis_year == 2026
     assert executor.analysis_since == _syslog_line_epoch("Oct  8 22:22:16", 2026, None)
-    assert executor.execute.call_args.args[0] == 'date "+%Y %b %e %H:%M:%S"'
+    assert executor.execute.call_args_list[0].args[0] == 'date "+%Y %b %e %H:%M:%S"'
+    assert executor.execute.call_args_list[1].args[0] == "echo $SSH_CONNECTION"
+    assert executor.control_source_ip == "192.168.64.1"
 
 
 _WINDOW_START = datetime.datetime(2026, 10, 8, 12, 0, 0)
@@ -221,6 +228,57 @@ def test_no_window_set_preserves_full_history_behavior():
     assert executor.analysis_since is None
     result = executor._parse_auth_log(_STALE_FLAG_LINE)
     assert result["flag_access_detected"] is True
+
+def test_blue_own_control_session_login_is_not_flagged():
+    # Blue authenticates from its own control IP on every command; that login
+    # must be marked self/informational and never land in the IOC set.
+    executor = _executor()
+    executor.control_source_ip = "192.168.64.1"
+    line = (
+        "Oct 16 10:00:00 ubuntu sshd[1000]: Accepted password for vagrant "
+        "from 192.168.64.1 port 51000 ssh2"
+    )
+    result = executor._parse_auth_log(line)
+    assert "192.168.64.1" not in result["suspicious_ips"]
+    assert result["assessment"] == "CLEAN"
+    assert result["events"][0]["severity"] == "informational"
+
+
+def test_attacker_login_from_other_ip_is_ioc():
+    executor = _executor()
+    executor.control_source_ip = "192.168.64.1"
+    line = (
+        "Oct 16 10:00:00 ubuntu sshd[1000]: Accepted password for vagrant "
+        "from 192.168.64.11 port 51000 ssh2"
+    )
+    result = executor._parse_auth_log(line)
+    assert "192.168.64.11" in result["suspicious_ips"]
+
+
+def test_blue_flag_inspection_is_not_a_breach():
+    # investigate_file_access runs `sudo stat/ls /root/flag.txt`; those touch the
+    # flag path but only read metadata, so they must NOT score as a compromise.
+    executor = _executor()
+    for verb in ("/usr/bin/stat", "/bin/ls -la"):
+        line = (
+            f"Oct 16 10:05:00 ubuntu sudo:  vagrant : TTY=unknown ; PWD=/ ; "
+            f"USER=root ; COMMAND={verb} /root/flag.txt"
+        )
+        result = executor._parse_auth_log(line)
+        assert result["flag_access_detected"] is False, verb
+        assert result["assessment"] != "BREACH", verb
+
+
+def test_attacker_flag_read_is_a_breach():
+    executor = _executor()
+    line = (
+        "Oct 16 10:06:00 ubuntu sudo:  vagrant : TTY=unknown ; PWD=/ ; "
+        "USER=root ; COMMAND=/usr/bin/cat /root/flag.txt"
+    )
+    result = executor._parse_auth_log(line)
+    assert result["flag_access_detected"] is True
+    assert result["assessment"] == "BREACH"
+
 
 def test_parse_auth_log_returns_findings():
     executor = ToolExecutor(host="localhost", user="testuser", pwd="testpassword")
