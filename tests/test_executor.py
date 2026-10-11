@@ -312,6 +312,46 @@ def test_investigate_processes_flags_flag_read_and_reverse_shell():
     assert result["assessment"] == "BREACH"
 
 
+def test_contain_attacker_blocks_ip_and_tracks_rule():
+    executor = _executor()
+    executor.execute = MagicMock(return_value="PL_ADDED\n")
+    result = executor.contain_attacker("192.168.64.11")
+    assert result["contained"] is True
+    assert result["assessment"] == "CONTAINED"
+    assert "192.168.64.11" in executor._contained_ips
+    # The command actually inserts a DROP rule for that source.
+    assert "iptables -I INPUT -s 192.168.64.11 -j DROP" in executor.execute.call_args.args[0]
+
+
+def test_contain_attacker_refuses_blues_own_ip():
+    executor = _executor()
+    executor.control_source_ip = "192.168.64.1"
+    executor.execute = MagicMock()
+    result = executor.contain_attacker("192.168.64.1")
+    assert result["contained"] is False
+    assert result["assessment"] == "REFUSED"
+    executor.execute.assert_not_called()  # never touches the firewall
+    assert executor._contained_ips == []
+
+
+def test_contain_attacker_rejects_non_ip_without_shelling_out():
+    executor = _executor()
+    executor.execute = MagicMock()
+    result = executor.contain_attacker("1.2.3.4; rm -rf /")
+    assert result["contained"] is False
+    executor.execute.assert_not_called()
+
+
+def test_disconnect_flushes_contained_rules():
+    executor = _executor()
+    executor._contained_ips = ["192.168.64.11"]
+    executor._master_alive = MagicMock(return_value=True)
+    executor.execute_remote = MagicMock(return_value="")
+    executor.disconnect()
+    assert "iptables -D INPUT -s 192.168.64.11 -j DROP" in executor.execute_remote.call_args.args[0]
+    assert executor._contained_ips == []
+
+
 def test_parse_auth_log_returns_findings():
     executor = ToolExecutor(host="localhost", user="testuser", pwd="testpassword")
     raw = (

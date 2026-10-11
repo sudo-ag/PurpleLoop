@@ -277,6 +277,9 @@ class ToolExecutor:
         # tell its own management traffic from the attacker's. Detected at
         # mark_analysis_window(); None means "unknown, treat every login as other".
         self.control_source_ip: Optional[str] = None
+        # Attacker IPs blue has firewalled on the target this run; removed at
+        # disconnect so the box isn't left blocking traffic across runs.
+        self._contained_ips: List[str] = []
         # Safety net: tear down the master if the orchestrator never calls
         # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
         atexit.register(self.disconnect)
@@ -391,6 +394,8 @@ class ToolExecutor:
 
     def disconnect(self):
         """Tears down the ControlMaster and cleans up the socket."""
+        # Remove any firewall rules blue added, before the master goes away.
+        self._flush_contained()
         if self._master_alive():
             subprocess.run(
                 ["ssh", "-O", "exit", "-o", f"ControlPath={self._control_path}",
@@ -648,6 +653,68 @@ class ToolExecutor:
             f"ls -la '{file_path}' 2>/dev/null || true"
         )
         return self._parse_file_access(audit_raw, stat_raw, ls_raw, file_path)
+
+    # ------------------------------------------------------------------
+    # Blue team response actions
+    # ------------------------------------------------------------------
+
+    def contain_attacker(self, ip: str) -> Dict[str, Any]:
+        """Block an attacker source IP at the target's firewall (reversible).
+
+        Drops inbound traffic from `ip` via iptables, cutting the attacker off at
+        the network. Refuses to block blue's own control IP (that would lock the
+        defender out). The rule is tracked and removed at disconnect so the box is
+        not left blocking traffic across runs.
+        """
+        ip = (ip or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "contain_attacker",
+            "target_ip": ip,
+            "contained": False,
+            "assessment": "INFO",
+            "summary": "",
+        }
+        if not _is_ipv4(ip):
+            findings["summary"] = f"'{ip}' is not a valid IPv4 address; nothing contained."
+            return findings
+        if self.control_source_ip and ip == self.control_source_ip:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = (
+                f"Refused: {ip} is blue's own control session — blocking it would "
+                "cut off the defender."
+            )
+            return findings
+
+        out = self.execute(
+            f"sudo iptables -C INPUT -s {ip} -j DROP 2>/dev/null && echo PL_EXISTS || "
+            f"(sudo iptables -I INPUT -s {ip} -j DROP && echo PL_ADDED)"
+        )
+        if "PL_ADDED" in out or "PL_EXISTS" in out:
+            if ip not in self._contained_ips:
+                self._contained_ips.append(ip)
+            findings["contained"] = True
+            findings["assessment"] = "CONTAINED"
+            findings["summary"] = (
+                f"Attacker {ip} contained: inbound traffic dropped at the target "
+                "firewall. The attacker's sessions can no longer reach this host."
+            )
+        else:
+            findings["summary"] = f"Failed to contain {ip}: {out.strip()[:160]}"
+        return findings
+
+    def _flush_contained(self) -> None:
+        """Remove firewall rules this executor added (best-effort)."""
+        if not self._contained_ips or not self._master_alive():
+            return
+        for ip in list(self._contained_ips):
+            if _is_ipv4(ip):
+                try:
+                    self.execute_remote(
+                        f"sudo iptables -D INPUT -s {ip} -j DROP 2>/dev/null || true"
+                    )
+                except Exception:
+                    pass
+        self._contained_ips.clear()
 
     # ------------------------------------------------------------------
     # Parsers — turn raw command output into structured signals
@@ -1526,6 +1593,13 @@ class ToolExecutor:
 def _find_all_ip(text: str) -> List[str]:
     """Extract IPv4 addresses from a string."""
     return re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text)
+
+
+def _is_ipv4(value: str) -> bool:
+    """Strict single-IPv4 check — used to guard a value before it is placed in a
+    shell command (no spaces, no injection)."""
+    m = re.fullmatch(r'(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})', value.strip())
+    return bool(m) and all(0 <= int(g) <= 255 for g in m.groups())
 
 
 def _find_user(text: str) -> Optional[str]:
