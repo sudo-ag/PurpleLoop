@@ -1,4 +1,5 @@
-from src.agents import _coerce_text_tool_call
+from unittest.mock import MagicMock
+from src.agents import Agent, RED_EVASION_ADDENDUM, _coerce_text_tool_call
 
 
 def test_recovers_parameters_key_format():
@@ -43,3 +44,22 @@ def test_json_without_name_returns_none():
 
 def test_multi_element_list_is_rejected():
     assert _coerce_text_tool_call('[{"name": "a"}, {"name": "b"}]') is None
+
+
+# --- red defense-evasion toggle -------------------------------------------
+
+
+def _mk(role, evade=False):
+    return Agent(role=role, executor=MagicMock(), model="test-model", evade=evade)
+
+
+def test_red_evasion_addendum_present_only_when_enabled():
+    assert RED_EVASION_ADDENDUM.strip()[:1] != ""  # non-empty
+    assert RED_EVASION_ADDENDUM not in _mk("red", evade=False).system_prompt
+    assert RED_EVASION_ADDENDUM in _mk("red", evade=True).system_prompt
+
+
+def test_blue_never_gets_evasion_even_if_flag_set():
+    blue = _mk("blue", evade=True)
+    assert blue.evade is False
+    assert RED_EVASION_ADDENDUM not in blue.system_prompt

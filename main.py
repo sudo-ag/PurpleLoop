@@ -31,6 +31,8 @@ def main() -> None:
     jump_user = os.getenv("RED_JUMP_USER", "kali")
     jump_pwd = os.getenv("RED_JUMP_PWD", "kali")
     model = os.getenv("MODEL", "llama3.2:latest")
+    # Opt-in: red cleans its tracks (log tampering) after reading the flag.
+    red_evasion = os.getenv("RED_EVASION", "0").lower() in ("1", "true", "yes", "on")
 
     if host != "mock" and jump_host:
         print(f"Starting simulation: red attacks {user}@{host} via jump "
@@ -64,7 +66,7 @@ def main() -> None:
                 red_executor = blue_executor
 
         # Initialize Agents
-        red = Agent(role="red", executor=red_executor, model=model)
+        red = Agent(role="red", executor=red_executor, model=model, evade=red_evasion)
         blue = Agent(role="blue", executor=blue_executor, model=model)
 
         # Initialize Orchestrator
