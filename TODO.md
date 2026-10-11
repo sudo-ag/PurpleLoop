@@ -107,3 +107,50 @@ the next turn). The scoreboard now reflects reality.
 - [ ] **Step 4 — environment variety + baselines** (dial 5). Config-driven
       targets; blue learns a per-host baseline → the deployable assessor.
 - [ ] **D1** — decide remediator vs. listener bias (before 1c's toolset grows).
+      (Leaning listener after Step 1c.)
+
+---
+
+## Current direction — autonomous learning arena
+
+Pivot (now that a capable model, e.g. `gpt-oss:120b-cloud`, can drive it): stop
+scripting the agents' *steps*; script the *game* (goal + scoring + guardrails) and
+let behavior emerge across many self-run episodes. The flag was scaffolding to
+validate the pipeline on a weak model; it stays as a regression toggle.
+
+**The game.** Two-box model. Red *earns* its way onto the vulnerable box by
+exploiting a real weakness and escalates; blue detects the intrusion while it is
+happening and responds. Open objectives + open tools; minimal tactic steering.
+
+**Tiered rubric (machine-checkable from ground truth):**
+- RED: T1 initial access (earned shell via a real vuln) → T2 priv-esc to root →
+  T3 impact (persistence or exfil). Score = tiers reached.
+- BLUE: D1 detect (true-positive, in-window, no idle false-positive) → D2
+  attribute (source IP / account / technique) → D3 respond (contain before
+  T2/T3). Minus penalties for false alarms / misses.
+- Graded/comparative outcome (did blue detect before red escalated?).
+
+**Decisions made:**
+- First vuln surface = **weak SSH creds** (hydra vs the SW roster) for T1; widen
+  to service exploits later.
+- Episode reset = **scripted cleanup** between episodes (restore logs, remove
+  red persistence/keys/cron, flush firewall, kill stray sessions); VM
+  snapshot/restore is the later, stronger answer.
+- Learning = **episodic / in-context** first (scorecard + lessons compound via
+  `knowledge.json`), not weight-level RL (that's a much later, optional step).
+
+**Build order (loop machinery first on the current game, then raise the goal):**
+1. **Episode arena + scorecard** — run N episodes in-process, score each side
+   against the rubric from ground truth, persist a per-episode scorecard, print
+   cross-episode trends. (Prove on the current handed-flag game.)
+2. **Scripted reset hook** between episodes.
+3. **Earned-SSH objective + two-channel red** — remove handed `vagrant`; red runs
+   hydra on Kali, then pivots with the cracked cred. Swap the flag goal for the
+   tiered rubric; strip red's phase list / blue's canned steering.
+4. **Learning loop** — feed each scorecard + reflection into `experience`;
+   run many episodes; let strategy compound.
+5. **(Later)** LLM judge for fuzzy scoring; trajectory collection for RL.
+
+**Guardrails:** sandboxed owned target; keep `FORBIDDEN_KEYWORDS`; reversible /
+cleaned actions; turn caps; per-episode reset so learning measures strategy, not
+box drift.
