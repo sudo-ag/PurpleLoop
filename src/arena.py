@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agents import Agent
-from src.executor import ToolExecutor
+from src.executor import ToolExecutor, _is_ipv4
 from src.mock_executor import MockExecutor
 from src.orchestrator import Orchestrator
 
@@ -95,6 +95,37 @@ def summarize(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
+    """Operator cleanup between episodes, run over the defender's root channel so
+    each episode starts from a consistent baseline rather than the previous
+    episode's mess.
+
+    Increment 2 undoes the drift that exists today:
+      - firewall blocks on the attacker IP (a DROP rule a crashed episode left
+        behind would stop red from ever connecting next time);
+      - the auth log (red's evasion scrubbing leaves it mangled across episodes;
+        clearing it gives a clean per-episode baseline — blue's analysis window
+        already scopes correctness within an episode).
+
+    Persistence vectors (keys/cron/backdoors) are cleaned in a later increment,
+    once the earned game actually plants them and the cleanup can be tested.
+    """
+    actions: List[str] = []
+    attacker_ip = getattr(red_ex, "jump_host", None)
+    if attacker_ip and _is_ipv4(attacker_ip):
+        # Remove every DROP rule for the attacker (loop: there may be more than one).
+        blue_ex.execute(
+            f"while sudo iptables -C INPUT -s {attacker_ip} -j DROP 2>/dev/null; do "
+            f"sudo iptables -D INPUT -s {attacker_ip} -j DROP; done 2>/dev/null; true"
+        )
+        actions.append(f"flushed firewall blocks for {attacker_ip}")
+
+    blue_ex.execute("sudo truncate -s 0 /var/log/auth.log 2>/dev/null || true")
+    actions.append("cleared auth.log")
+
+    return {"episode": episode, "actions": actions}
+
+
 def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
@@ -136,11 +167,15 @@ def run_episodes(
     evade: bool = False,
     detect_within_turns: int = 3,
     reset_fn: Optional[ResetFn] = None,
+    reset: bool = True,
     episodes_path: Path = EPISODES_PATH,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary."""
     model = model or os.getenv("MODEL", "llama3.2:latest")
+    # Default to the scripted reset on a real box; mock has no state to reset.
+    if reset_fn is None and reset and host != "mock":
+        reset_fn = scripted_reset
     red, blue = _build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade)
 
     cards: List[Dict[str, Any]] = []
@@ -181,11 +216,13 @@ def main() -> None:
     p.add_argument("--jump-pwd", default="kali")
     p.add_argument("--evade", action="store_true")
     p.add_argument("--detect-within-turns", type=int, default=3)
+    p.add_argument("--no-reset", action="store_true", help="Skip the scripted between-episode reset")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
         user=a.user, pwd=a.pwd, jump_host=a.jump_host, jump_user=a.jump_user,
         jump_pwd=a.jump_pwd, evade=a.evade, detect_within_turns=a.detect_within_turns,
+        reset=not a.no_reset,
     )
 
 

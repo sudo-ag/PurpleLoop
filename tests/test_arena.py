@@ -1,6 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from src.arena import build_scorecard, summarize
+from src.arena import build_scorecard, summarize, scripted_reset
 
 
 def _state(**kw):
@@ -58,3 +59,32 @@ def test_summarize_counts_and_rates():
 
 def test_summarize_empty():
     assert summarize([]) == {"episodes": 0}
+
+
+def test_scripted_reset_flushes_attacker_and_clears_log():
+    blue = MagicMock()
+    red = SimpleNamespace(jump_host="192.168.64.11")
+    out = scripted_reset(blue, red, episode=2)
+    cmds = " ".join(c.args[0] for c in blue.execute.call_args_list)
+    assert "iptables -D INPUT -s 192.168.64.11 -j DROP" in cmds
+    assert "truncate -s 0 /var/log/auth.log" in cmds
+    assert any("192.168.64.11" in a for a in out["actions"])
+
+
+def test_scripted_reset_skips_firewall_without_valid_attacker_ip():
+    blue = MagicMock()
+    red = SimpleNamespace(jump_host=None)        # single-box / mock: no jump
+    scripted_reset(blue, red, episode=1)
+    cmds = " ".join(c.args[0] for c in blue.execute.call_args_list)
+    assert "iptables" not in cmds                 # nothing to flush
+    assert "truncate -s 0 /var/log/auth.log" in cmds
+
+
+def test_scripted_reset_rejects_non_ip_jump_host():
+    # A bogus jump_host must never be interpolated into an iptables command.
+    blue = MagicMock()
+    red = SimpleNamespace(jump_host="evil; rm -rf /")
+    scripted_reset(blue, red, episode=1)
+    cmds = " ".join(c.args[0] for c in blue.execute.call_args_list)
+    assert "iptables" not in cmds
+    assert "rm -rf" not in cmds
