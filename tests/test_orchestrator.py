@@ -321,7 +321,9 @@ def test_red_phase_jumps_to_flag_read_on_confirmed_root():
     assert "passwordless root" in summary
 
 
-def test_blue_guidance_steers_to_first_unused_tool():
+def test_blue_guidance_defaults_to_logs_heartbeat():
+    # Whenever the last blue action was NOT investigate_logs, blue is steered
+    # straight back to it — the only reliable flag-read detector.
     red_agent = MagicMock(spec=Agent)
     blue_agent = MagicMock(spec=Agent)
     orch = Orchestrator(red_agent, blue_agent)
@@ -335,14 +337,32 @@ def test_blue_guidance_steers_to_first_unused_tool():
 
     summary = orch._build_state_summary("blue")
 
-    # investigate_processes is used, so blue is pushed to the highest-priority
-    # unused tool — investigate_logs, which carries the breach signal.
     assert "Blue guidance:" in summary
-    assert "`investigate_logs`" in summary
+    assert "Call `investigate_logs` now" in summary
+    assert "Do NOT declare the system clean" in summary
     assert "Already run: investigate_processes" in summary
 
 
-def test_blue_guidance_when_all_tools_exhausted():
+def test_blue_guidance_covers_breadth_right_after_a_logs_check():
+    # Right after a logs check, spend one turn on breadth, then return to logs.
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.history = [
+        {"role": "blue", "tool": {"function": {"name": "investigate_logs", "arguments": {}}}, "output": "{}"},
+    ]
+
+    summary = orch._build_state_summary("blue")
+
+    # investigate_logs was last; steer to the top unused breadth tool and promise
+    # a return to logs next turn.
+    assert "investigate_file_access" in summary
+    assert "go back to `investigate_logs` next turn" in summary
+
+
+def test_blue_guidance_returns_to_logs_after_full_sweep():
+    # Even after every tool has run once, a non-logs last action sends blue back
+    # to the logs heartbeat rather than stopping.
     red_agent = MagicMock(spec=Agent)
     blue_agent = MagicMock(spec=Agent)
     orch = Orchestrator(red_agent, blue_agent)
@@ -360,7 +380,8 @@ def test_blue_guidance_when_all_tools_exhausted():
 
     summary = orch._build_state_summary("blue")
 
-    assert "run every investigation tool" in summary
+    assert "Call `investigate_logs` now" in summary
+    assert "Do NOT declare the system clean" in summary
 
 def test_blue_suspicious_processes_do_not_confirm_victory():
     red_agent = MagicMock(spec=Agent)
