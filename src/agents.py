@@ -126,6 +126,37 @@ RULES:
 """
 
 
+def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
+    """Recover a tool call the model emitted as JSON *text* instead of a
+    structured tool_call, so the turn isn't silently wasted.
+
+    Returns a ``{'function': {'name', 'arguments'}}`` dict, or None if the text
+    is not a recognizable tool call. Tolerates the shapes models actually produce:
+    an ``arguments`` key, a ``parameters`` key, or neither (no-arg tools), an
+    optional ``function`` wrapper, and a single-element list wrapper.
+    """
+    cleaned = content.replace('```json', '').replace('```', '').strip()
+    try:
+        data = json.loads(cleaned)
+    except Exception:
+        return None
+    if isinstance(data, list):
+        if len(data) != 1:
+            return None
+        data = data[0]
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get('function'), dict):
+        data = data['function']
+    name = data.get('name')
+    if not isinstance(name, str) or not name:
+        return None
+    args = data.get('arguments', data.get('parameters', {}))
+    if not isinstance(args, dict):
+        args = {}
+    return {'function': {'name': name, 'arguments': args}}
+
+
 class Agent:
     def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None):
         self.role = role
@@ -248,17 +279,15 @@ class Agent:
             return message['tool_calls']
 
         content = message.get('content', "")
-        # Fallback: try to parse JSON if the model returned it as text
+        # Fallback: the model sometimes emits its tool call as JSON text instead
+        # of a structured tool_call. Recover it so the turn isn't wasted. Models
+        # vary the shape — {"name","arguments"} or {"name","parameters"}, with the
+        # args key sometimes omitted for a no-arg tool, and sometimes wrapped in a
+        # one-element list — so normalize all of those to a single tool call.
         if content:
-            import json
-            try:
-                # Remove markdown code blocks if present
-                cleaned_content = content.replace('```json', '').replace('```', '').strip()
-                data = json.loads(cleaned_content)
-                if isinstance(data, dict) and 'name' in data and 'arguments' in data:
-                    return [{'function': data}]
-            except Exception:
-                pass
+            parsed = _coerce_text_tool_call(content)
+            if parsed is not None:
+                return [parsed]
 
         return content
 
