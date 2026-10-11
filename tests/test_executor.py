@@ -2,7 +2,12 @@ import datetime
 import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
-from src.executor import MAX_LOG_EVENTS, SSH_MASTER_EXPECT, ToolExecutor
+from src.executor import (
+    MAX_LOG_EVENTS,
+    SSH_MASTER_EXPECT,
+    SSH_JUMP_SESSION_EXPECT,
+    ToolExecutor,
+)
 
 
 def _executor():
@@ -85,6 +90,75 @@ def test_connect_opens_master_with_expect():
     assert argv[-1] == SSH_MASTER_EXPECT
     assert env["PL_SSH_CONTROL"] == executor._control_path
     assert env["PL_SSH_HOST"] == "192.168.64.10"
+
+
+def _jump_executor():
+    return ToolExecutor(
+        host="192.168.64.12", user="vagrant", pwd="vagrant",
+        jump_host="192.168.64.11", jump_user="kali", jump_pwd="kali",
+    )
+
+
+def test_jump_command_runs_per_call_session_with_both_hops():
+    executor = _jump_executor()
+    assert executor._uses_jump is True
+    # A jump command is a fresh expect session (SSH_JUMP_SESSION_EXPECT), not a
+    # master ride; it must carry both hops' creds and the command verbatim.
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["expect"], returncode=0, stdout="vagrant\n", stderr="",
+        )
+        out = executor.execute_remote("whoami")
+
+    assert out.strip() == "vagrant"
+    argv = mock_run.call_args.args[0]
+    env = mock_run.call_args.kwargs["env"]
+    assert argv[-1] == SSH_JUMP_SESSION_EXPECT
+    assert env["PL_SSH_JUMP_HOST"] == "192.168.64.11"
+    assert env["PL_SSH_JUMP_USER"] == "kali"
+    assert env["PL_SSH_JUMP_PASSWORD"] == "kali"
+    assert env["PL_SSH_HOST"] == "192.168.64.12"
+    assert env["PL_SSH_COMMAND"] == "whoami"
+    assert env["PL_SSH_CONFIG"] == executor._ssh_config_path
+    # The ssh_config was written and carries a Host * block for both hops.
+    with open(executor._ssh_config_path, encoding="utf-8") as f:
+        assert "Host *" in f.read()
+
+
+def test_jump_connect_validates_chain_with_probe():
+    executor = _jump_executor()
+    with patch.object(executor, "_run_jump_session", return_value="__PL_CONNECT_OK__\n") as probe:
+        executor.connect()  # must not raise
+    assert probe.call_args.args[0] == "echo __PL_CONNECT_OK__"
+
+
+def test_jump_connect_raises_when_probe_fails():
+    executor = _jump_executor()
+    with patch.object(executor, "_run_jump_session", return_value="Remote command failed with exit code 5."), \
+         pytest.raises(RuntimeError, match="via jump"):
+        executor.connect()
+
+
+def test_jump_executor_never_opens_a_master():
+    # Forbidden-command checks still fire, and nothing touches the direct master.
+    executor = _jump_executor()
+    with patch("subprocess.run") as mock_run, \
+         pytest.raises(ValueError, match="Forbidden command"):
+        executor.execute_remote("rm -rf /")
+    mock_run.assert_not_called()
+
+
+def test_no_jump_configured_uses_direct_template():
+    executor = _executor()
+    assert executor._uses_jump is False
+    with patch("subprocess.run") as mock_run, \
+         patch.object(executor, "_master_alive", side_effect=[False, True]):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["expect"], returncode=0, stdout="", stderr="",
+        )
+        executor.connect()
+    assert mock_run.call_args.args[0][-1] == SSH_MASTER_EXPECT
+    assert "PL_SSH_JUMP_HOST" not in mock_run.call_args.kwargs["env"]
 
 
 def test_connect_raises_when_master_never_comes_up():

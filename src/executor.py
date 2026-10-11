@@ -6,6 +6,7 @@ import os
 import tempfile
 import atexit
 import datetime
+import time
 from typing import List, Optional, Dict, Any
 
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +60,64 @@ expect {
 
 catch wait result
 exit [lindex $result 3]
+"""
+
+
+# Runs ONE command on the target through the jump host (-J) and exits. The target
+# sees the connection arriving from the jump's IP — what lets blue tell attacker
+# traffic (via the jump) from its own direct control session. Host-key/auth policy
+# for BOTH hops comes from the generated ssh_config (-F), because command-line -o
+# flags do not reach the -J jump hop. Two password prompts arrive (jump, then
+# target); each is matched by its host so the right one is fed.
+#
+# This is per-call rather than a persistent master: a ControlMaster multiplexed
+# over a ProxyJump does not survive backgrounding in this setup (the jump leg is
+# torn down with the foreground process and the socket dies). The cost is one
+# double-auth per command (~2-3s); only red pays it, roughly one command per turn.
+#
+# The command is read via `set rcmd $env(PL_SSH_COMMAND)` (a single Tcl
+# substitution) and passed to spawn as one argument, so `$`/`[` inside it are NOT
+# re-parsed by Tcl — they reach the target's shell intact.
+SSH_JUMP_SESSION_EXPECT = r"""
+set timeout $env(PL_SSH_TIMEOUT)
+set rcmd $env(PL_SSH_COMMAND)
+
+spawn -noecho ssh -F $env(PL_SSH_CONFIG) \
+    -o ConnectTimeout=$env(PL_SSH_TIMEOUT) \
+    -J "$env(PL_SSH_JUMP_USER)@$env(PL_SSH_JUMP_HOST)" \
+    -- "$env(PL_SSH_USER)@$env(PL_SSH_HOST)" $rcmd
+
+expect {
+    -re "(?i)are you sure you want to continue connecting" {
+        send "yes\r"
+        exp_continue
+    }
+    -re "(?i)$env(PL_SSH_JUMP_HOST).*password:" {
+        send -- "$env(PL_SSH_JUMP_PASSWORD)\r"
+        exp_continue
+    }
+    -re "(?i)$env(PL_SSH_HOST).*password:" {
+        send -- "$env(PL_SSH_PASSWORD)\r"
+        exp_continue
+    }
+    eof
+}
+
+catch wait result
+exit [lindex $result 3]
+"""
+
+
+# ssh_config applied to every hop (jump and target) via `ssh -F`. A Host * block
+# is the only way to set host-key/auth policy for the -J jump hop, since -o flags
+# on the command line only reach the final hop.
+_SSH_CONFIG_TEMPLATE = """Host *
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    PubkeyAuthentication no
+    PreferredAuthentications password
+    NumberOfPasswordPrompts 1
+    LogLevel ERROR
 """
 
 
@@ -185,15 +244,31 @@ class ToolExecutor:
         "/etc/passwd"
     ]
 
-    def __init__(self, host: str, user: str, pwd: str, timeout: int = 60):
+    def __init__(
+        self,
+        host: str,
+        user: str,
+        pwd: str,
+        timeout: int = 60,
+        jump_host: Optional[str] = None,
+        jump_user: Optional[str] = None,
+        jump_pwd: Optional[str] = None,
+    ):
         self.host = host
         self.user = user
         self.pwd = pwd
         self.timeout = timeout
+        # When set, the master is opened through this jump host (-J), so the
+        # target sees us arriving from the jump's IP. All three must be present.
+        self.jump_host = jump_host
+        self.jump_user = jump_user
+        self.jump_pwd = jump_pwd
         # One control socket per executor instance, so parallel targets never
         # collide. Short dir keeps us well under the ~104-char AF_UNIX path cap.
         self._control_dir = tempfile.mkdtemp(prefix="pl-ssh-")
         self._control_path = os.path.join(self._control_dir, "cm.sock")
+        # ssh_config is only written/used on the jump path (per-call sessions).
+        self._ssh_config_path = os.path.join(self._control_dir, "ssh_config")
         # Blue log analysis is scoped to events at/after this target-clock epoch.
         # None = no scoping (full history), which is the default for unit tests.
         self.analysis_since: Optional[float] = None
@@ -206,15 +281,35 @@ class ToolExecutor:
     def _target(self) -> str:
         return f"{self.user}@{self.host}"
 
+    @property
+    def _uses_jump(self) -> bool:
+        return bool(self.jump_host and self.jump_user and self.jump_pwd is not None)
+
     def _master_alive(self) -> bool:
         return os.path.exists(self._control_path)
 
     def connect(self):
-        """Brings up the shared SSH ControlMaster (one password auth per host)."""
+        """Prepare the executor's transport.
+
+        Direct executor: bring up the shared SSH ControlMaster (one password auth,
+        then every command rides the socket). Jump executor: there is no master
+        (see SSH_JUMP_SESSION_EXPECT) — validate the full jump→target chain once so
+        bad creds or an unreachable target fail here rather than mid-run.
+        """
+        if self._uses_jump:
+            probe = self._run_jump_session("echo __PL_CONNECT_OK__")
+            if "__PL_CONNECT_OK__" not in probe:
+                raise RuntimeError(
+                    f"Failed to reach {self.host} via jump {self.jump_host}: "
+                    f"{probe.strip()[:200] or 'unknown error'}"
+                )
+            logger.info("Jump session to %s via %s verified.", self.host, self.jump_host)
+            return
+
         if self._master_alive():
             return
 
-        logger.info(f"Opening SSH master to {self.host}...")
+        logger.info("Opening SSH master to %s...", self.host)
         os.makedirs(self._control_dir, exist_ok=True)
         env = dict(os.environ)
         env.update({
@@ -250,6 +345,46 @@ class ToolExecutor:
             )
         logger.info("SSH master established to %s.", self.host)
 
+    def _run_jump_session(self, command: str) -> str:
+        """Run one command on the target through the jump host and return cleaned
+        output. Each call authenticates both hops (no persistent master is
+        possible over a ProxyJump here — see SSH_JUMP_SESSION_EXPECT)."""
+        os.makedirs(self._control_dir, exist_ok=True)
+        if not os.path.exists(self._ssh_config_path):
+            with open(self._ssh_config_path, "w", encoding="utf-8") as f:
+                f.write(_SSH_CONFIG_TEMPLATE)
+        env = dict(os.environ)
+        env.update({
+            "PL_SSH_USER": self.user,
+            "PL_SSH_HOST": self.host,
+            "PL_SSH_PASSWORD": self.pwd,
+            "PL_SSH_JUMP_USER": self.jump_user,
+            "PL_SSH_JUMP_HOST": self.jump_host,
+            "PL_SSH_JUMP_PASSWORD": self.jump_pwd,
+            "PL_SSH_CONFIG": self._ssh_config_path,
+            "PL_SSH_TIMEOUT": str(self.timeout),
+            "PL_SSH_COMMAND": command,
+        })
+        try:
+            proc = subprocess.run(
+                ["expect", "-c", SSH_JUMP_SESSION_EXPECT],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout + 20,
+                env=env,
+            )
+        except FileNotFoundError:
+            return "Error: 'expect' not found on PATH."
+        except subprocess.TimeoutExpired:
+            return f"Error: Remote command timed out after {self.timeout} seconds."
+
+        output = _clean_openssh_output(proc.stdout)
+        if output:
+            return output
+        if proc.returncode != 0:
+            return f"Remote command failed with exit code {proc.returncode}."
+        return "Remote command executed successfully (no output)."
+
     def disconnect(self):
         """Tears down the ControlMaster and cleans up the socket."""
         if self._master_alive():
@@ -261,6 +396,8 @@ class ToolExecutor:
         try:
             if os.path.exists(self._control_path):
                 os.remove(self._control_path)
+            if os.path.exists(self._ssh_config_path):
+                os.remove(self._ssh_config_path)
             if os.path.isdir(self._control_dir):
                 os.rmdir(self._control_dir)
         except OSError:
@@ -322,11 +459,17 @@ class ToolExecutor:
 
     def execute_remote(self, command: str) -> str:
         """
-        Executes a command on the target host over the shared SSH ControlMaster.
-        Self-heals: if the master has aged out (long idle gaps during model
-        inference), it is re-established once and the command retried.
+        Executes a command on the target host.
+
+        Jump executor: each command is a fresh authenticated session through the
+        jump host (no persistent master is possible over a ProxyJump here).
+        Direct executor: the command rides the shared SSH ControlMaster, which
+        self-heals if it has aged out during long idle gaps (model inference).
         """
         self._check_forbidden(command, "remote")
+
+        if self._uses_jump:
+            return self._run_jump_session(command)
 
         if not self._master_alive():
             self.connect()
