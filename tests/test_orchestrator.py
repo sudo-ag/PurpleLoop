@@ -433,9 +433,10 @@ def test_blue_guidance_covers_breadth_right_after_a_logs_check():
 
     summary = orch._build_state_summary("blue")
 
-    # investigate_logs was last; steer to the top unused breadth tool and promise
-    # a return to logs next turn.
-    assert "investigate_file_access" in summary
+    # investigate_logs was last; steer to the top unused breadth tool
+    # (investigate_connections — blue's network-recon visibility) and promise a
+    # return to logs next turn.
+    assert "investigate_connections" in summary
     assert "go back to `investigate_logs` next turn" in summary
 
 

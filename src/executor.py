@@ -280,6 +280,9 @@ class ToolExecutor:
         # Attacker IPs blue has firewalled on the target this run; removed at
         # disconnect so the box isn't left blocking traffic across runs.
         self._contained_ips: List[str] = []
+        # Whether blue has armed the inbound-connection LOG rule (for network
+        # visibility into an attacker's recon); removed at disconnect.
+        self._conn_logging: bool = False
         # Safety net: tear down the master if the orchestrator never calls
         # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
         atexit.register(self.disconnect)
@@ -394,8 +397,9 @@ class ToolExecutor:
 
     def disconnect(self):
         """Tears down the ControlMaster and cleans up the socket."""
-        # Remove any firewall rules blue added, before the master goes away.
+        # Remove any firewall / logging rules blue added, before the master goes.
         self._flush_contained()
+        self._disable_connection_logging()
         if self._master_alive():
             subprocess.run(
                 ["ssh", "-O", "exit", "-o", f"ControlPath={self._control_path}",
@@ -654,6 +658,17 @@ class ToolExecutor:
         )
         return self._parse_file_access(audit_raw, stat_raw, ls_raw, file_path)
 
+    def investigate_connections(self) -> Dict[str, Any]:
+        """Examine logged inbound connections for an attacker's network activity
+        — scanning and service probing — attributing foreign source IPs. This is
+        blue's window into the recon phase that host logs miss; it relies on the
+        connection-logging rule armed at engagement start."""
+        raw = self.execute(
+            "sudo grep PLWATCH /var/log/kern.log 2>/dev/null | tail -800 || "
+            "sudo dmesg 2>/dev/null | grep PLWATCH | tail -800 || true"
+        )
+        return self._parse_connections(raw)
+
     # ------------------------------------------------------------------
     # Blue team response actions
     # ------------------------------------------------------------------
@@ -715,6 +730,31 @@ class ToolExecutor:
                 except Exception:
                     pass
         self._contained_ips.clear()
+
+    _CONN_LOG_RULE = 'INPUT -m state --state NEW -j LOG --log-prefix "PLWATCH "'
+
+    def enable_connection_logging(self) -> bool:
+        """Arm an iptables rule that LOGs new inbound connections, giving blue
+        network-level visibility into an attacker's recon/service probing (the
+        kill-chain phase host logs miss). Reversible; removed at disconnect."""
+        out = self.execute(
+            f"sudo iptables -C {self._CONN_LOG_RULE} 2>/dev/null && echo PL_EXISTS || "
+            f"(sudo iptables -I {self._CONN_LOG_RULE} && echo PL_ADDED)"
+        )
+        self._conn_logging = ("PL_ADDED" in out or "PL_EXISTS" in out)
+        if self._conn_logging:
+            logger.info("Connection logging armed on %s.", self.host)
+        else:
+            logger.warning("Could not arm connection logging on %s: %s", self.host, out.strip()[:120])
+        return self._conn_logging
+
+    def _disable_connection_logging(self) -> None:
+        if self._conn_logging and self._master_alive():
+            try:
+                self.execute_remote(f"sudo iptables -D {self._CONN_LOG_RULE} 2>/dev/null || true")
+            except Exception:
+                pass
+        self._conn_logging = False
 
     # ------------------------------------------------------------------
     # Parsers — turn raw command output into structured signals
@@ -1127,6 +1167,95 @@ class ToolExecutor:
                 "Investigate any unexpected listeners or connections."
                 if suspicious_count > 0
                 else "No obvious network anomalies."
+            ),
+        }
+
+    # A source touching at least this many distinct destination ports in the
+    # window looks like a port scan rather than a single service connection.
+    _SCAN_PORT_THRESHOLD = 5
+
+    def _parse_connections(self, raw: str) -> Dict[str, Any]:
+        armed = self._conn_logging
+        if not _is_substantive(raw) or "PLWATCH" not in raw:
+            return {
+                "tool": "investigate_connections",
+                "logging_active": armed,
+                "connections": 0,
+                "suspicious_ips": [],
+                "port_scanners": [],
+                "summary": (
+                    "No inbound-connection activity logged in the window."
+                    if armed else
+                    "Connection logging is not armed, so network recon is invisible."
+                ),
+                "assessment": "CLEAN",
+                "recommendation": (
+                    "No foreign inbound connections seen."
+                    if armed else
+                    "Arm connection logging to gain visibility into network recon."
+                ),
+            }
+
+        per_src: Dict[str, Dict[str, Any]] = {}
+        total = 0
+        for line in raw.splitlines():
+            if "PLWATCH" not in line:
+                continue
+            if not self._within_window(line):
+                continue
+            m = re.search(r"SRC=(\S+)", line)
+            if not m:
+                continue
+            ip = m.group(1)
+            # Ignore blue's own control session and loopback — the attacker is
+            # any other source.
+            if ip == self.control_source_ip or ip in ("127.0.0.1", "::1"):
+                continue
+            total += 1
+            entry = per_src.setdefault(ip, {"count": 0, "ports": set()})
+            entry["count"] += 1
+            dpt = re.search(r"DPT=(\d+)", line)
+            if dpt:
+                entry["ports"].add(dpt.group(1))
+
+        suspicious_ips = sorted(per_src)
+        port_scanners = sorted(
+            ip for ip, e in per_src.items()
+            if len(e["ports"]) >= self._SCAN_PORT_THRESHOLD
+        )
+        sources = {
+            ip: {"connections": e["count"], "distinct_ports": len(e["ports"])}
+            for ip, e in per_src.items()
+        }
+
+        if port_scanners:
+            summary = (
+                f"Inbound network recon detected: {', '.join(port_scanners)} "
+                f"probed many ports (likely port scan). Foreign sources: "
+                f"{', '.join(suspicious_ips)}."
+            )
+        elif suspicious_ips:
+            summary = (
+                f"Foreign inbound connections from {', '.join(suspicious_ips)} "
+                f"({total} new connections logged)."
+            )
+        else:
+            summary = "No foreign inbound connections in the window."
+
+        return {
+            "tool": "investigate_connections",
+            "logging_active": armed,
+            "connections": total,
+            "sources": sources,
+            "suspicious_ips": suspicious_ips,
+            "port_scanners": port_scanners,
+            "summary": summary,
+            "assessment": "SUSPICIOUS" if suspicious_ips else "CLEAN",
+            "recommendation": (
+                "An attacker is probing the host over the network. Identify the "
+                "source IP and contain it before it earns a foothold."
+                if suspicious_ips else
+                "No foreign inbound connections seen."
             ),
         }
 

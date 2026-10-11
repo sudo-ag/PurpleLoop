@@ -312,6 +312,51 @@ def test_investigate_processes_flags_flag_read_and_reverse_shell():
     assert result["assessment"] == "BREACH"
 
 
+def _plwatch(src, dpt):
+    return (f"Oct 16 10:00:00 ubuntu kernel: [1.0] PLWATCH IN=eth1 OUT= "
+            f"SRC={src} DST=192.168.64.12 LEN=52 PROTO=TCP SPT=5000 DPT={dpt} SYN")
+
+
+def test_connections_flags_port_scan_from_foreign_ip():
+    executor = _executor()
+    executor._conn_logging = True
+    executor.control_source_ip = "192.168.64.1"
+    raw = "\n".join(_plwatch("192.168.64.11", p) for p in (22, 80, 443, 3306, 21, 8080)) + \
+          "\n" + _plwatch("192.168.64.1", 22)  # blue's own session — must be ignored
+    result = executor._parse_connections(raw)
+    assert result["suspicious_ips"] == ["192.168.64.11"]
+    assert result["port_scanners"] == ["192.168.64.11"]
+    assert "192.168.64.1" not in result["suspicious_ips"]
+    assert result["assessment"] == "SUSPICIOUS"
+
+
+def test_connections_clean_when_only_self_and_loopback():
+    executor = _executor()
+    executor._conn_logging = True
+    executor.control_source_ip = "192.168.64.1"
+    raw = _plwatch("192.168.64.1", 22) + "\n" + _plwatch("127.0.0.1", 631)
+    result = executor._parse_connections(raw)
+    assert result["suspicious_ips"] == []
+    assert result["assessment"] == "CLEAN"
+
+
+def test_connections_reports_when_logging_not_armed():
+    executor = _executor()
+    executor._conn_logging = False
+    result = executor._parse_connections("Remote command executed successfully (no output).")
+    assert result["logging_active"] is False
+    assert result["assessment"] == "CLEAN"
+    assert "not armed" in result["summary"]
+
+
+def test_enable_connection_logging_arms_rule():
+    executor = _executor()
+    executor.execute = MagicMock(return_value="PL_ADDED\n")
+    assert executor.enable_connection_logging() is True
+    assert executor._conn_logging is True
+    assert "PLWATCH" in executor.execute.call_args.args[0]
+
+
 def test_contain_attacker_blocks_ip_and_tracks_rule():
     executor = _executor()
     executor.execute = MagicMock(return_value="PL_ADDED\n")

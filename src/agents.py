@@ -68,6 +68,10 @@ Step 1 (and your default every turn) — Investigate logs:
   failed attempts followed by a success. Re-run this most turns.
 
 Between log checks, use a turn to cover the other tools once for context:
+  - `investigate_connections` — logged inbound connections. This is how you SEE an
+    attacker scanning or probing your services over the network BEFORE they have a
+    foothold (host/auth logs miss that phase). Any foreign source IP it reports is
+    the attacker — contain it immediately.
   - `investigate_file_access` (filepath="/root/flag.txt") — whether the flag file
     exists and shows access (note: file access time is not always reliable, so
     the logs are the authoritative signal).
@@ -301,6 +305,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_connections',
+                        'description': 'Examine logged inbound network connections for an attacker scanning or probing the host from the network — the recon phase that host/auth logs miss. Returns suspicious source IPs and port-scan detection. Any foreign source IP here is the attacker; contain it.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'contain_attacker',
                         'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
                         'parameters': {
@@ -450,6 +462,13 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "investigate_file_access", "status": "error", "error": str(e), "file_path": file_path})
+
+        elif tool_call['function']['name'] == 'investigate_connections':
+            try:
+                result = self.executor.investigate_connections()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_connections", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")

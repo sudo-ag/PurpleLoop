@@ -28,6 +28,7 @@ _RED_PHASE_GUIDANCE = {
 # run yet, which stops the 3B model from repeating one tool every turn.
 _BLUE_TOOL_PRIORITY = [
     "investigate_logs",
+    "investigate_connections",
     "investigate_file_access",
     "investigate_processes",
     "investigate_users",
@@ -617,6 +618,15 @@ class Orchestrator:
                 blue_executor.mark_analysis_window()
             except Exception as e:
                 print(f"Could not set analysis window (continuing): {e}")
+
+        # 1c. Arm inbound-connection logging so blue can see the attacker's
+        # network recon (scanning / service probing), not just post-foothold host
+        # signals. Removed at disconnect.
+        if self._executor_supports(blue_executor, "enable_connection_logging"):
+            try:
+                blue_executor.enable_connection_logging()
+            except Exception as e:
+                print(f"Could not arm connection logging (continuing): {e}")
 
         # 2. Load long-term knowledge
         knowledge = self._load_knowledge()
