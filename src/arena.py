@@ -36,12 +36,15 @@ REPORTS_DIR = REPO / "episode_reports"
 ResetFn = Callable[[Any, Any, int], None]
 
 
-def build_scorecard(state: Any, winner: Optional[str], episode: int) -> Dict[str, Any]:
+def build_scorecard(state: Any, winner: Optional[str], episode: int,
+                    tiers: Optional[List[Dict[str, Any]]] = None,
+                    verdict: Optional[str] = None) -> Dict[str, Any]:
     """Structured result for one episode, from the orchestrator's ground truth.
 
     `state` is anything exposing the SimulationState fields (duck-typed), so
-    tests can pass a lightweight stand-in. The red T1/T2/T3 tiering slots in once
-    the earned-SSH game lands; for now we score the signals we already track.
+    tests can pass a lightweight stand-in. `tiers`/`verdict` carry the graded
+    per-tier scoreboard (from `Orchestrator.tier_scoreboard()`/`verdict()`);
+    omitted for the legacy binary-only callers.
     """
     g = lambda name: getattr(state, name, None)
     access = g("red_access_turn")
@@ -70,6 +73,8 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int) -> Dict[str
         "blue_contain_turn": contain,
         "contained_ip": g("contained_ip"),
         "dwell": dwell,
+        "tiers": tiers,
+        "verdict": verdict,
     }
 
 
@@ -95,6 +100,7 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
     return {
         "episode": episode,
         "winner": card.get("winner"),
+        "verdict": card.get("verdict"),
         "turns": g("turn"),
         "mode": mode,
         "milestones": {
@@ -103,6 +109,7 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
             "blue_contain_turn": g("blue_contain_turn"),
             "contained_ip": g("contained_ip"),
         },
+        "tiers": card.get("tiers"),
         "timeline": [_timeline_entry(h) for h in (g("history") or [])],
     }
 
@@ -240,7 +247,8 @@ def run_episodes(
             detect_within_turns=detect_within_turns, observe=observe,
         )
         winner = orch.run_simulation(max_turns=max_turns)
-        card = build_scorecard(orch.state, winner, i)
+        card = build_scorecard(orch.state, winner, i,
+                               tiers=orch.tier_scoreboard(), verdict=orch.verdict())
         # Persist the full per-episode timeline so every scorecard is auditable —
         # a learning loop is only as trustworthy as our ability to see what
         # actually happened in each episode.
@@ -263,8 +271,8 @@ def run_episodes(
         cards.append(card)
         _append_jsonl(episodes_path, card)
         print(
-            f"[episode {i}/{n}] winner={card['winner'] or 'none'} "
-            f"red={card['red_outcome']} blue={card['blue_outcome']} dwell={card['dwell']} "
+            f"[episode {i}/{n}] {card['verdict']} "
+            f"(winner={card['winner'] or 'none'}, dwell={card['dwell']}) "
             f"-> {report_path.name}"
         )
 
