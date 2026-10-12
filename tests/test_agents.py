@@ -99,3 +99,15 @@ def test_blue_never_gets_attacker_channel_or_earned():
     blue = Agent(role="blue", executor=MagicMock(), model="m", earned=True, attacker_executor=MagicMock())
     assert blue.earned is False
     assert blue.attacker_executor is None
+
+
+def test_earned_red_gets_use_credential_tool():
+    from unittest.mock import MagicMock
+    from src.agents import Agent
+    from src.executor import ToolExecutor
+    ex = MagicMock(spec=ToolExecutor)
+    earned = Agent(role="red", executor=ex, earned=True, attacker_executor=ex)
+    handed = Agent(role="red", executor=ex, earned=False)
+    names = lambda a: {t["function"]["name"] for t in a.tools}
+    assert "use_credential" in names(earned)
+    assert "use_credential" not in names(handed)

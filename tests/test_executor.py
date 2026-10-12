@@ -526,3 +526,31 @@ def test_parse_auth_log_empty_read_is_unavailable_not_clean():
         result = executor._parse_auth_log(raw)
         assert result["assessment"] == "UNAVAILABLE", f"raw={raw!r}"
         assert result["flag_access_detected"] is False
+
+
+def test_set_target_credential_rejects_defender_accounts():
+    ex = ToolExecutor(host="h", user="", pwd="", require_foothold=True)
+    for acct in ("vagrant", "VAGRANT", "root"):
+        r = ex.set_target_credential(acct, "pw")
+        assert r["status"] == "rejected", acct
+    assert ex._has_foothold is False
+
+def test_target_execution_refused_without_foothold():
+    ex = ToolExecutor(host="h", user="", pwd="", require_foothold=True)
+    out = ex.execute_remote("id")
+    assert "No foothold" in out
+    assert ex._has_foothold is False
+
+def test_set_target_credential_success_establishes_foothold():
+    ex = ToolExecutor(host="h", user="", pwd="", require_foothold=True)
+    ex._run_session = lambda cmd: (True, "han_solo\n")  # validated login returns the user
+    r = ex.set_target_credential("han_solo", "nerfherder")
+    assert r["status"] == "success" and r["whoami"] == "han_solo"
+    assert ex._has_foothold is True and ex.user == "han_solo" and ex.pwd == "nerfherder"
+
+def test_set_target_credential_failure_keeps_no_foothold():
+    ex = ToolExecutor(host="h", user="", pwd="", require_foothold=True)
+    ex._run_session = lambda cmd: (True, "Permission denied (publickey,password).")
+    r = ex.set_target_credential("han_solo", "wrongpw")
+    assert r["status"] == "failed"
+    assert ex._has_foothold is False and ex.user == ""

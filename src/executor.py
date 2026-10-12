@@ -181,6 +181,12 @@ _NON_SUBSTANTIVE = {
 }
 
 
+# Accounts red may not adopt as an earned foothold: the defender's admin account
+# (and root) are out of scope — red must earn a non-admin user identity, which is
+# what keeps red and blue distinct principals so blue can remediate without self-harm.
+_DEFENDER_ACCOUNTS = {"vagrant", "root"}
+
+
 def _is_substantive(output: Optional[str]) -> bool:
     """True when command output carries real data, not an empty/sentinel result."""
     if output is None:
@@ -253,11 +259,17 @@ class ToolExecutor:
         jump_host: Optional[str] = None,
         jump_user: Optional[str] = None,
         jump_pwd: Optional[str] = None,
+        require_foothold: bool = False,
     ):
         self.host = host
         self.user = user
         self.pwd = pwd
         self.timeout = timeout
+        # Earned foothold: when True the executor has NO working target cred yet —
+        # target commands are refused until a cred is proven via set_target_credential
+        # (red cracks it and calls use_credential). Blue and handed-red leave this False.
+        self.require_foothold = require_foothold
+        self._has_foothold = not require_foothold
         # When set, the master is opened through this jump host (-J), so the
         # target sees us arriving from the jump's IP. All three must be present.
         self.jump_host = jump_host
@@ -307,6 +319,11 @@ class ToolExecutor:
         bad creds or an unreachable target fail here rather than mid-run.
         """
         if self._uses_jump:
+            if self.require_foothold and not self._has_foothold:
+                # No cred earned yet — nothing to authenticate. Defer the target
+                # probe until use_credential proves a foothold.
+                logger.info("Earned red: deferring target auth until a credential is earned.")
+                return
             probe = self._run_jump_session("echo __PL_CONNECT_OK__")
             if "__PL_CONNECT_OK__" not in probe:
                 raise RuntimeError(
@@ -481,6 +498,12 @@ class ToolExecutor:
         """
         self._check_forbidden(command, "remote")
 
+        if self.require_foothold and not self._has_foothold:
+            return ("No foothold on the target yet. From your attacker box "
+                    "(run_on_attacker), recon and crack a credential, then call "
+                    "use_credential(username, password) to establish a foothold "
+                    "before running commands on the target.")
+
         if self._uses_jump:
             return self._run_jump_session(command)
 
@@ -503,6 +526,38 @@ class ToolExecutor:
         if not ok:
             return f"Error: SSH connection to {self.host} failed: {text}"
         return text
+
+    def set_target_credential(self, user: str, pwd: str) -> Dict[str, Any]:
+        """Adopt a target credential red claims to have cracked, proving it works.
+
+        Rejects the defender's admin accounts (so red earns a distinct, non-admin
+        identity), then validates by authenticating to the target and checking the
+        resulting user. On success the executor runs as that account from now on;
+        on failure nothing changes and red still has no foothold.
+        """
+        u = (user or "").strip()
+        if u.lower() in _DEFENDER_ACCOUNTS:
+            return {"tool": "use_credential", "status": "rejected", "user": u,
+                    "reason": f"'{u}' is an administrator/defender account and is out of scope. "
+                              "Earn a non-admin user foothold instead."}
+        if not u:
+            return {"tool": "use_credential", "status": "rejected", "user": u,
+                    "reason": "No username supplied."}
+
+        prev_user, prev_pwd = self.user, self.pwd
+        self.user, self.pwd = u, pwd
+        who = (self._run_jump_session("id -un") if self._uses_jump
+               else self._run_session("id -un")[1]).strip()
+        if who == u:
+            self._has_foothold = True
+            logger.info("Earned foothold established as %s on %s.", u, self.host)
+            return {"tool": "use_credential", "status": "success", "user": u, "whoami": who,
+                    "note": f"Foothold established as {u}. You can now run commands on the target."}
+        # Auth failed — revert so red keeps no foothold.
+        self.user, self.pwd = prev_user, prev_pwd
+        return {"tool": "use_credential", "status": "failed", "user": u,
+                "reason": f"Could not authenticate to the target as '{u}' with that password.",
+                "detail": who[:160]}
 
     def execute_local(self, command: str) -> str:
         """

@@ -180,9 +180,14 @@ def _build_agents(
     else:
         blue_ex = ToolExecutor(host=host, user=user, pwd=pwd)
         if jump_host:
+            # Earned red starts with NO target credential — it must crack one and
+            # prove it via use_credential; handed red keeps the configured cred.
             red_ex = ToolExecutor(
-                host=host, user=user, pwd=pwd,
+                host=host,
+                user="" if earned else user,
+                pwd="" if earned else pwd,
                 jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
+                require_foothold=earned,
             )
             if earned:
                 attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
