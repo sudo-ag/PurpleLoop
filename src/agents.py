@@ -577,9 +577,22 @@ class Agent:
             for h in history
         ])
 
+        # Anchor the lesson to the agent's own side, or red drifts into defender
+        # advice ("block the IP") instead of improving its own offense.
+        perspective = {
+            "red": "You are the RED attacker. Your lesson must make YOUR OWN OFFENSE "
+                   "better next time — a sharper exploit, a stealthier approach, or a "
+                   "working privilege-escalation/exfiltration path. Never give defensive "
+                   "advice (blocking, monitoring, hardening); that is the other side's job.",
+            "blue": "You are the BLUE defender. Your lesson must make YOUR OWN DEFENSE "
+                    "better next time — faster or more reliable detection, attribution, "
+                    "or containment. Never give offensive advice.",
+        }.get(self.role.lower(), "")
+
         if outcome:
             prompt = (
                 f"{outcome}\n\n"
+                f"{perspective}\n\n"
                 f"Your actions this episode, in order (the last line is what you were "
                 f"doing when the episode ended):\n\n{history_str}\n\n"
                 "Draw the single most important CAUSAL lesson: name the specific action "
@@ -588,7 +601,12 @@ class Agent:
                 "Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
             )
         else:
-            prompt = f"Analyze this battle history:\n\n{history_str}\n\nWhat is the single most important lesson learned from this simulation that you should remember for next time? Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
+            prompt = (
+                f"{perspective}\n\nAnalyze this battle history:\n\n{history_str}\n\n"
+                "What is the single most important lesson learned from this simulation that "
+                "you should remember for next time? Provide only the lesson as a short, "
+                "one-sentence bullet point. Do not include preamble."
+            )
 
         try:
             response = self.client.chat(
