@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from src.arena import build_scorecard, summarize, scripted_reset
+from src.arena import build_scorecard, summarize, scripted_reset, graded_result
 
 
 def _state(**kw):
@@ -59,6 +59,54 @@ def test_summarize_counts_and_rates():
 
 def test_summarize_empty():
     assert summarize([]) == {"episodes": 0}
+
+
+# --- graded (tier-aware) scoring -------------------------------------------
+
+def _tier(tier, reached=None, detect=None, defended=None):
+    dwell = (detect - reached) if (reached is not None and detect is not None) else None
+    return {"tier": tier, "name": {1: "foothold", 2: "exfil", 3: "root"}[tier],
+            "reached_turn": reached, "detect_turn": detect, "dwell": dwell, "defended": defended}
+
+
+def test_graded_result_blue_defends_top_reached():
+    tiers = [_tier(1, reached=4, detect=5, defended=True), _tier(2), _tier(3)]
+    assert graded_result(tiers) == "blue"
+
+
+def test_graded_result_red_when_top_tier_undefended():
+    tiers = [_tier(1, reached=4, detect=5, defended=True), _tier(2),
+             _tier(3, reached=19, defended=False)]
+    assert graded_result(tiers) == "red"
+
+
+def test_graded_result_draw_or_prevention_when_nothing_reached():
+    tiers = [_tier(1), _tier(2), _tier(3)]
+    assert graded_result(tiers) == "draw"
+    assert graded_result(tiers, contained_turn=2) == "blue"
+
+
+def test_graded_result_none_without_board():
+    assert graded_result(None) is None
+
+
+def test_scorecard_carries_graded_result():
+    tiers = [_tier(1, reached=4, detect=5, defended=True), _tier(2), _tier(3)]
+    card = build_scorecard(_state(turn=6), None, 1, tiers=tiers)
+    assert card["graded_result"] == "blue"
+
+
+def test_summarize_prefers_tier_board_over_flag_winner():
+    # Red reached only T1 but blue detected it in-window: the root-flag winner is
+    # 'none' (no root read), yet the graded board must credit blue — the bug where
+    # blue_detect_rate read 0.0 while the verdict said 'blue defended T1'.
+    tiers = [_tier(1, reached=4, detect=5, defended=True), _tier(2), _tier(3)]
+    cards = [{"winner": None, "blue_outcome": "missed", "dwell": None,
+              "tiers": tiers, "graded_result": "blue"}]
+    s = summarize(cards)
+    assert s["blue_wins"] == 1 and s["red_wins"] == 0 and s["draws"] == 0
+    assert s["blue_detect_rate"] == 1.0
+    assert s["avg_dwell"] == 1.0
 
 
 def test_scripted_reset_flushes_attacker_and_clears_log():

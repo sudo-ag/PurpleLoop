@@ -36,6 +36,21 @@ REPORTS_DIR = REPO / "episode_reports"
 ResetFn = Callable[[Any, Any, int], None]
 
 
+def graded_result(tiers: Optional[List[Dict[str, Any]]],
+                  contained_turn: Optional[int] = None) -> Optional[str]:
+    """Graded winner from the tier board (not the root-flag binary): blue if it
+    defended the TOP tier red reached (detected in-window or contained), red if
+    that tier went undefended, draw if red reached nothing (blue if it was still
+    contained). None when no tier board is available (legacy callers)."""
+    if not tiers:
+        return None
+    reached = [t for t in tiers if t.get("reached_turn") is not None]
+    if not reached:
+        return "blue" if contained_turn is not None else "draw"
+    top = max(reached, key=lambda t: t["tier"])
+    return "blue" if top.get("defended") else "red"
+
+
 def build_scorecard(state: Any, winner: Optional[str], episode: int,
                     tiers: Optional[List[Dict[str, Any]]] = None,
                     verdict: Optional[str] = None) -> Dict[str, Any]:
@@ -75,6 +90,7 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int,
         "dwell": dwell,
         "tiers": tiers,
         "verdict": verdict,
+        "graded_result": graded_result(tiers, contain),
     }
 
 
@@ -115,22 +131,43 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
 
 
 def summarize(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Aggregate trends across a run of episodes (pure)."""
+    """Aggregate trends across a run (pure). Tier-aware: when a card carries the
+    graded tier board (`graded_result`/`tiers`), wins and the defense rate come
+    from the graded result — did blue defend the top tier red reached — not the
+    legacy root-flag `winner`. Cards without a tier board keep the old behavior,
+    so the headline numbers stop contradicting the per-episode verdict."""
     n = len(cards)
     if n == 0:
         return {"episodes": 0}
-    red_wins = sum(1 for c in cards if c["winner"] == "red")
-    blue_wins = sum(1 for c in cards if c["winner"] == "blue")
-    detected = sum(1 for c in cards if c["blue_outcome"] in ("detected", "contained"))
-    contained = sum(1 for c in cards if c["blue_outcome"] == "contained")
-    false_pos = sum(1 for c in cards if c["blue_outcome"] == "false_positive")
-    dwells = [c["dwell"] for c in cards if c["dwell"] is not None]
+
+    def win(c):
+        return c.get("graded_result") or c.get("winner")
+
+    def defended(c):
+        gr = c.get("graded_result")
+        if gr is not None:
+            return gr == "blue"
+        return c.get("blue_outcome") in ("detected", "contained")
+
+    def dwell(c):
+        tiers = c.get("tiers")
+        if tiers:
+            reached = [t for t in tiers if t.get("reached_turn") is not None]
+            if reached:
+                return max(reached, key=lambda t: t["tier"]).get("dwell")
+        return c.get("dwell")
+
+    red_wins = sum(1 for c in cards if win(c) == "red")
+    blue_wins = sum(1 for c in cards if win(c) == "blue")
+    contained = sum(1 for c in cards if c.get("blue_outcome") == "contained")
+    false_pos = sum(1 for c in cards if c.get("blue_outcome") == "false_positive")
+    dwells = [d for d in (dwell(c) for c in cards) if d is not None]
     return {
         "episodes": n,
         "red_wins": red_wins,
         "blue_wins": blue_wins,
         "draws": n - red_wins - blue_wins,
-        "blue_detect_rate": round(detected / n, 3),
+        "blue_detect_rate": round(sum(1 for c in cards if defended(c)) / n, 3),
         "blue_contain_rate": round(contained / n, 3),
         "blue_false_positive_rate": round(false_pos / n, 3),
         "avg_dwell": round(sum(dwells) / len(dwells), 2) if dwells else None,
@@ -272,7 +309,8 @@ def run_episodes(
         _append_jsonl(episodes_path, card)
         print(
             f"[episode {i}/{n}] {card['verdict']} "
-            f"(winner={card['winner'] or 'none'}, dwell={card['dwell']}) "
+            f"(graded={card.get('graded_result') or 'n/a'}, "
+            f"winner={card['winner'] or 'none'}, dwell={card['dwell']}) "
             f"-> {report_path.name}"
         )
 
