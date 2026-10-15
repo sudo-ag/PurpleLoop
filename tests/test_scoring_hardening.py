@@ -91,3 +91,46 @@ def test_generate_report_surfaces_graded_verdict_and_tier_board():
     r = o.generate_report()
     assert "**Verdict:**" in r
     assert "T1 foothold" in r and "T3 root" in r
+
+
+# --- earned credential is persisted and resurfaced to red (sudo -S fix) -----
+
+def _usecred(user, pw, status="success"):
+    tool = {"function": {"name": "use_credential",
+                         "arguments": {"username": user, "password": pw}}}
+    out = f'{{"tool": "use_credential", "status": "{status}", "user": "{user}"}}'
+    return tool, out
+
+
+def test_successful_use_credential_is_captured():
+    o = _orch()
+    tool, out = _usecred("lando_calrissian", "@dm1n1str8r")
+    o._capture_foothold_cred(tool, out)
+    assert o.state.red_foothold_cred == {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
+
+
+def test_failed_use_credential_is_not_captured():
+    o = _orch()
+    tool, out = _usecred("lando_calrissian", "wrong", status="failed")
+    o._capture_foothold_cred(tool, out)
+    assert o.state.red_foothold_cred is None
+
+
+def test_non_usecredential_tool_does_not_capture():
+    o = _orch()
+    tool = {"function": {"name": "execute_command", "arguments": {"command": "id"}}}
+    o._capture_foothold_cred(tool, "uid=1120(lando)")
+    assert o.state.red_foothold_cred is None
+
+
+def test_red_summary_resurfaces_cred_blue_never_sees_it():
+    o = _orch()
+    o.state.red_foothold_cred = {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
+    red_summary = o._build_state_summary("red")
+    assert "@dm1n1str8r" in red_summary and "sudo -S" in red_summary
+    assert "@dm1n1str8r" not in o._build_state_summary("blue")
+
+
+def test_red_summary_has_no_cred_line_before_foothold():
+    o = _orch()
+    assert "FOOTHOLD CREDENTIAL" not in o._build_state_summary("red")
