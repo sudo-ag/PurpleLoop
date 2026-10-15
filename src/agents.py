@@ -237,9 +237,14 @@ OBSERVATION / TRAINING MODE:
 This run, your job is to LEARN the attacker's techniques, not to end the fight.
 Keep investigating thoroughly and report precisely what you observe — which tools
 the attacker uses, from which IP, in what order, and what each reveals. Do NOT
-contain the attacker: containment is held so the attacker proceeds and you get to
-witness its full approach. Your value this run is the quality of what you detect
-and understand, so you can defend against it next time.
+contain the attacker at the network: containment is held so the attacker proceeds
+and you get to witness its full approach.
+
+However, `remediate_account` IS live this run: once the attacker has a foothold
+(a successful login by a non-control account), you MAY lock that account to stop
+an in-progress breach on-host — the goal is to catch and cut off the attacker
+AFTER it lands but BEFORE it reaches root. Your value this run is both the quality
+of what you detect and whether you can neutralize the foothold in time.
 """
 
 
@@ -590,13 +595,11 @@ class Agent:
                 return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
 
         elif tool_call['function']['name'] == 'remediate_account':
+            # Unlike contain_attacker, remediation is LIVE even in observe mode:
+            # observe holds the *network* block so red still earns a foothold and
+            # the chain unfolds, but blue may still lock the compromised account to
+            # try to stop the breach on-host (catch red after foothold, before root).
             user = tool_call['function']['arguments'].get('user', "")
-            if self.observe:
-                # Training mode: don't actually lock the account — let red keep
-                # going so blue can keep observing. Reported as a held action.
-                return json.dumps({"tool": "remediate_account", "status": "observed",
-                                   "remediated": False, "target_user": user,
-                                   "note": "observe mode: remediation held for training"})
             try:
                 result = self.executor.remediate_account(user)
                 return json.dumps(result)

@@ -63,3 +63,25 @@ def test_tier_is_defended_when_remediated_at_or_before_reach():
     o.state.blue_remediate_turn = 4
     board = {b["tier"]: b for b in o.tier_scoreboard()}
     assert board[1]["defended"] is True
+
+
+# --- observe mode: network block held, on-host remediation LIVE ------------
+
+def test_remediation_is_live_even_in_observe():
+    ex = MagicMock()
+    ex.remediate_account.return_value = {"tool": "remediate_account",
+                                         "remediated": True, "target_user": "chewbacca"}
+    blue = Agent(role="blue", executor=ex, observe=True)
+    out = blue.process_tool_call(
+        {"function": {"name": "remediate_account", "arguments": {"user": "chewbacca"}}})
+    ex.remediate_account.assert_called_once_with("chewbacca")
+    assert '"remediated": true' in out
+
+
+def test_containment_is_still_held_in_observe():
+    ex = MagicMock()
+    blue = Agent(role="blue", executor=ex, observe=True)
+    out = blue.process_tool_call(
+        {"function": {"name": "contain_attacker", "arguments": {"ip": "192.168.64.11"}}})
+    assert "containment held" in out
+    ex.contain_attacker.assert_not_called()
