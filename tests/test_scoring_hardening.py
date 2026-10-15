@@ -76,3 +76,18 @@ def test_flag_detection_is_case_insensitive():
     assert o._check_red_victory("here is flag{abc}") is True
     assert o._check_red_victory("FLAG{ABC}") is True
     assert o._check_red_victory("no token here") is False
+
+
+# --- generate_report surfaces the graded verdict + tier board (#6) ---------
+
+def test_generate_report_surfaces_graded_verdict_and_tier_board():
+    # The single-episode report (used by main.py) must carry the graded verdict
+    # and per-tier board, not just the flag-binary winner.
+    o = _orch()
+    o.state.red_tiers = {1: 4, 3: 9}
+    o.state.blue_tier_detect = {1: 5}
+    o.state.red_access_turn = 9
+    o.state.turn = 12
+    r = o.generate_report()
+    assert "**Verdict:**" in r
+    assert "T1 foothold" in r and "T3 root" in r

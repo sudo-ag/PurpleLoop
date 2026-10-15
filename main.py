@@ -87,6 +87,7 @@ def main() -> None:
             print(f"\nSimulation ended. Winner: {winner.upper()}")
         else:
             print("\nSimulation ended. No winner determined.")
+        print(f"Graded verdict: {orchestrator.verdict()}")
 
     except Exception as e:
         print(f"Simulation failed: {e}")
