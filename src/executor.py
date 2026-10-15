@@ -890,7 +890,7 @@ class ToolExecutor:
                 sudo_count += 1
                 cmd = _find_command(line)
                 evt["indicator"] = "sudo_escalation"
-                if _is_sensitive_file_access(cmd):
+                if _is_sensitive_file_access(cmd) and not _sudo_denied(line):
                     evt["severity"] = "critical"
                     evt["event"] = "Sensitive file accessed via sudo"
                     evt["note"] = f"Sensitive file accessed via sudo: {cmd}"
@@ -997,7 +997,7 @@ class ToolExecutor:
                 cmd = _find_command(line)
                 evt["command"] = cmd
                 evt["event"] = "Sudo command"
-                if _is_sensitive_file_access(cmd):
+                if _is_sensitive_file_access(cmd) and not _sudo_denied(line):
                     evt["severity"] = "critical"
                     evt["flag_access"] = True
                     flag_access = True
@@ -1851,6 +1851,25 @@ def _is_sensitive_file_access(cmd: Optional[str]) -> bool:
     tokens = cmd.split()
     verb = tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
     return verb not in _INSPECTION_VERBS
+
+
+# Markers sudo writes when it REFUSES a command. Such a line still carries the
+# attempted `COMMAND=`, so the sensitive-path check alone would score a denied
+# `sudo cat /root/flag.txt` as a real read — a false breach. A successful sudo
+# COMMAND line carries none of these.
+_SUDO_DENIAL_MARKERS = (
+    "not in sudoers",
+    "incorrect password",
+    "command not allowed",
+    "a password is required",
+    "authentication failure",
+)
+
+
+def _sudo_denied(line: str) -> bool:
+    """True if a sudo auth-log line is a refusal, not a successful execution."""
+    lowered = line.lower()
+    return any(m in lowered for m in _SUDO_DENIAL_MARKERS)
 
 
 def _parse_ps_line(line: str) -> Optional[Dict[str, Any]]:

@@ -222,6 +222,23 @@ def test_analysis_window_keeps_in_window_flag_access():
     assert result["assessment"] == "BREACH"
 
 
+_DENIED_FLAG_LINE = (
+    "Oct 8 12:06:00 ubuntu sudo: chewbacca : user NOT in sudoers ; TTY=unknown ; "
+    "PWD=/home/chewbacca ; USER=root ; COMMAND=/bin/cat /root/flag.txt"
+)
+
+
+def test_denied_sudo_on_flag_is_not_access():
+    # A REFUSED `sudo cat /root/flag.txt` still logs the attempted COMMAND, but
+    # the flag was never read — it must not score as a breach (the false T3 bug).
+    executor = _executor()
+    executor.analysis_since = _WINDOW_START.timestamp()
+    executor._analysis_year = 2026
+    result = executor._parse_auth_log(_DENIED_FLAG_LINE)
+    assert result["flag_access_detected"] is False
+    assert result["assessment"] != "BREACH"
+
+
 def test_no_window_set_preserves_full_history_behavior():
     # Default (no window) keeps the original behavior — stale line still flagged.
     executor = _executor()

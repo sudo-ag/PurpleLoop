@@ -397,7 +397,6 @@ class Orchestrator:
                 )
 
         used = self._blue_tools_used()
-        used_set = set(used)
         last = used[-1] if used else None
         # `investigate_logs` is the ONLY reliable flag-read detector, and the read
         # can land on any turn, so it is blue's heartbeat: run it almost every turn.
@@ -416,11 +415,12 @@ class Orchestrator:
                 "flag_access_detected."
             )
         else:
-            # Just checked logs — cover one breadth tool (or file-access) this turn.
-            next_breadth = next(
-                (t for t in _BLUE_TOOL_PRIORITY if t != "investigate_logs" and t not in used_set),
-                "investigate_file_access",
-            )
+            # Just checked logs — cover one breadth tool this turn. Pick the
+            # least-recently-used breadth tool so blue keeps rotating instead of
+            # sticking on one once every tool has been tried at least once.
+            breadth = [t for t in _BLUE_TOOL_PRIORITY if t != "investigate_logs"]
+            last_use = {t: i for i, t in enumerate(used)}  # most recent index wins
+            next_breadth = min(breadth, key=lambda t: last_use.get(t, -1))
             guidance += (
                 f" You just checked the logs. Use this turn for breadth — call `{next_breadth}` "
                 f"— then go back to `investigate_logs` next turn to stay on watch."
@@ -428,6 +428,40 @@ class Orchestrator:
         if used:
             guidance += f" Already run: {', '.join(dict.fromkeys(used))}."
         return f"Blue guidance: {guidance}"
+
+    def _repeat_nudge(self, role: str) -> str:
+        """Nudge an agent that spent its whole last turn re-issuing tool calls it
+        had already tried, with no new action — the loop both sides fell into.
+        Blue's `investigate_logs` heartbeat is excluded: it is meant to repeat.
+        """
+        exclude = {"investigate_logs"} if role == "blue" else set()
+        entries = []  # (turn, sig, label, out) for this role's tool calls, in order
+        for entry in self.state.history:
+            if entry.get("role") != role or "tool" not in entry:
+                continue
+            fn = entry.get("tool", {}).get("function", {})
+            name = fn.get("name", "")
+            if not name or name in exclude:
+                continue
+            args = fn.get("arguments", {}) or {}
+            sig = name + ":" + json.dumps(args, sort_keys=True, default=str)
+            cmd = args.get("command") if isinstance(args, dict) else None
+            label = f"`{cmd}`" if isinstance(cmd, str) else f"`{name}` {args}"
+            out = str(entry.get("output", "")).strip().replace("\n", " ")
+            entries.append((entry.get("turn"), sig, label, out))
+        if len(entries) < 2:
+            return ""
+        last_turn = entries[-1][0]
+        last = [e for e in entries if e[0] == last_turn]
+        earlier = {e[1] for e in entries if e[0] != last_turn}
+        if not last or any(e[1] not in earlier for e in last):
+            return ""  # nothing done, or at least one genuinely new action — not looping
+        tried = list(dict.fromkeys(f"{label} -> {out[:80]}" for _, _, label, out in last))
+        return (
+            "\nRepetition check: last turn you only repeated actions you had already "
+            f"tried ({'; '.join(tried)}) with no new result. Stop repeating these — "
+            "try a genuinely different approach."
+        )
 
     def _build_state_summary(self, role: str) -> str:
         state_summary = (
@@ -438,6 +472,7 @@ class Orchestrator:
             state_summary += f"\n{self._red_phase_guidance()}"
         elif role == "blue":
             state_summary += f"\n{self._blue_tool_guidance()}"
+        state_summary += self._repeat_nudge(role)
         return state_summary
 
     def step(self) -> Optional[str]:
