@@ -23,3 +23,10 @@ build/
 tools_call.py
 src/_e2e_mock.py
 episode_reports/
+HANDOFF.md
+
+# Generated / run artifacts
+*.egg-info/
+graphify-out/
+knowledge.json.*.bak
+archive_pre_*/
