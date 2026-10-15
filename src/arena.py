@@ -210,7 +210,7 @@ def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
         f.write(json.dumps(record) + "\n")
 
 
-def _build_agents(
+def build_agents(
     host: str, model: str, user: str, pwd: str,
     jump_host: Optional[str], jump_user: str, jump_pwd: str,
     evade: bool, earned: bool, observe: bool,
@@ -271,7 +271,7 @@ def run_episodes(
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
-    red, blue = _build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe)
+    red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe)
 
     cards: List[Dict[str, Any]] = []
     for i in range(1, n + 1):

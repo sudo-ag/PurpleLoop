@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from src.arena import build_scorecard, summarize, scripted_reset, graded_result
+from src.arena import build_scorecard, summarize, scripted_reset, graded_result, build_agents
 
 
 def _state(**kw):
@@ -159,3 +159,24 @@ def test_build_replay_normalizes_timeline_and_milestones():
                         "name": "run_on_attacker",
                         "args": {"command": "nmap -sT 192.168.64.12"}, "output": "22/tcp open"}
     assert text_evt["kind"] == "text" and text_evt["output"] == "Investigating." and text_evt["role"] == "blue"
+
+
+# --- build_agents earned/handed parity (shared by arena and main.py) -------
+
+_ARGS = ("192.168.64.12", "llama3.2:latest", "vagrant", "vagrant",
+         "192.168.64.11", "kali", "kali")
+
+
+def test_build_agents_earned_red_has_no_cred_and_requires_foothold():
+    red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False)
+    assert red.executor.require_foothold is True
+    assert red.executor.user == "" and red.executor.pwd == ""   # must earn a cred
+    assert getattr(red, "attacker_executor", None) is not None   # Kali recon channel
+    assert blue.executor.user == "vagrant"                       # blue keeps its cred
+
+
+def test_build_agents_handed_red_keeps_configured_cred():
+    red, blue = build_agents(*_ARGS, evade=False, earned=False, observe=False)
+    assert red.executor.require_foothold is False
+    assert red.executor.user == "vagrant"
+    assert getattr(red, "attacker_executor", None) is None

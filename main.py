@@ -4,9 +4,7 @@ import os
 import sys
 from src.dashboard import app as dashboard_app
 import uvicorn
-from src.executor import ToolExecutor
-from src.mock_executor import MockExecutor
-from src.agents import Agent
+from src.arena import build_agents
 from src.orchestrator import Orchestrator
 
 def run_dashboard() -> None:
@@ -53,34 +51,15 @@ def main() -> None:
         time.sleep(2)
 
     try:
-        # Blue defends the target directly; red attacks it from the jump host so
-        # its traffic arrives with the jump's source IP. With no jump host both
-        # roles share one direct executor (single-box / legacy behavior).
-        red_attacker_executor = None
-        if host == "mock":
-            red_executor = blue_executor = MockExecutor()
-        else:
-            blue_executor = ToolExecutor(host=host, user=user, pwd=pwd)
-            if jump_host:
-                red_executor = ToolExecutor(
-                    host=host, user=user, pwd=pwd,
-                    jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
-                )
-                # Earned foothold: red also gets a direct channel to its attacker
-                # box (the jump host) to run recon / hydra from.
-                if red_earned:
-                    red_attacker_executor = ToolExecutor(
-                        host=jump_host, user=jump_user, pwd=jump_pwd,
-                    )
-            else:
-                red_executor = blue_executor
-
-        # Initialize Agents
-        red = Agent(
-            role="red", executor=red_executor, model=model,
-            evade=red_evasion, earned=red_earned, attacker_executor=red_attacker_executor,
+        # Build red/blue via the same builder the arena uses, so the earned flow
+        # stays in sync: earned red starts with NO target credential and must
+        # prove one via use_credential (require_foothold); handed red keeps the
+        # configured cred. Blue defends the target directly.
+        red, blue = build_agents(
+            host=host, model=model, user=user, pwd=pwd,
+            jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
+            evade=red_evasion, earned=red_earned, observe=False,
         )
-        blue = Agent(role="blue", executor=blue_executor, model=model)
 
         # Initialize Orchestrator
         dashboard_url = os.environ.get("DASHBOARD_URL", "http://localhost:8000") if use_dashboard else None
