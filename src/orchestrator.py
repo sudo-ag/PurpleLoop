@@ -4,7 +4,63 @@ import requests
 import json
 import os
 import re
+import difflib
 from src.agents import Agent
+
+
+# --- lesson memory hygiene --------------------------------------------------
+# Every lesson in knowledge.json is injected into the agent's prompt each turn,
+# so an unbounded, near-duplicate-laden list bloats the prompt and drowns real
+# signal (the loop produced ~10 near-identical "repeating failed find/sudo"
+# lessons per side). Keep the list deduped and bounded.
+_LESSON_CAP = 20
+_LESSON_SIM_THRESHOLD = 0.82      # char-sequence (difflib): near-identical text
+_LESSON_JACCARD_THRESHOLD = 0.5   # token overlap: reordered / reworded repeats
+
+
+def _normalize_lesson(s: str) -> str:
+    return " ".join(s.strip().lstrip("*•- ").lower().split())
+
+
+def merge_lesson(lessons: List[str], new: Optional[str],
+                 cap: int = _LESSON_CAP,
+                 threshold: float = _LESSON_SIM_THRESHOLD,
+                 jaccard: float = _LESSON_JACCARD_THRESHOLD) -> List[str]:
+    """Append `new` unless it duplicates an existing lesson, then keep only the
+    most recent `cap`. Pure — returns a new list, never mutates. A duplicate is
+    exact-normalized, char-similar (difflib >= threshold), or token-similar
+    (Jaccard >= jaccard). Thresholds are conservative so genuinely distinct
+    lessons are never merged.
+
+    shortcut: this catches exact/reworded re-emits, not semantically identical
+    lessons phrased very differently (measured char/token overlap there is
+    indistinguishable from distinct lessons); the cap bounds those. Upgrade to
+    an embedding / LLM-judge pass for true semantic dedup (needs a model).
+    """
+    if not new or not new.strip():
+        return list(lessons)
+    norm_new = _normalize_lesson(new)
+    tok_new = set(norm_new.split())
+    for ex in lessons:
+        norm = _normalize_lesson(ex)
+        tok = set(norm.split())
+        union = tok | tok_new
+        if (norm == norm_new
+                or difflib.SequenceMatcher(None, norm, norm_new).ratio() >= threshold
+                or (union and len(tok & tok_new) / len(union) >= jaccard)):
+            return list(lessons)
+    return (list(lessons) + [new])[-cap:]
+
+
+def dedupe_lessons(lessons: List[str],
+                   cap: int = _LESSON_CAP,
+                   threshold: float = _LESSON_SIM_THRESHOLD) -> List[str]:
+    """Compact an existing lesson list by replaying it through `merge_lesson`,
+    so accumulated near-duplicates collapse and the result respects the cap."""
+    out: List[str] = []
+    for lesson in lessons:
+        out = merge_lesson(out, lesson, cap=cap, threshold=threshold)
+    return out
 
 
 _RED_PHASE_GUIDANCE = {
@@ -828,10 +884,12 @@ class Orchestrator:
             except Exception as e:
                 print(f"Could not arm connection logging (continuing): {e}")
 
-        # 2. Load long-term knowledge
+        # 2. Load long-term knowledge, compacting accumulated near-duplicates.
         knowledge = self._load_knowledge()
-        self.red_agent.experience = knowledge.get("red", [])
-        self.blue_agent.experience = knowledge.get("blue", [])
+        knowledge["red"] = dedupe_lessons(knowledge.get("red", []))
+        knowledge["blue"] = dedupe_lessons(knowledge.get("blue", []))
+        self.red_agent.experience = knowledge["red"]
+        self.blue_agent.experience = knowledge["blue"]
 
         try:
             for _ in range(max_turns):
@@ -859,10 +917,10 @@ class Orchestrator:
         blue_lesson = self.blue_agent.summarize_experience(blue_history, self._outcome_brief("blue"))
 
         if red_lesson:
-            knowledge["red"].append(red_lesson)
+            knowledge["red"] = merge_lesson(knowledge["red"], red_lesson)
             print(f"Red learned: {red_lesson}")
         if blue_lesson:
-            knowledge["blue"].append(blue_lesson)
+            knowledge["blue"] = merge_lesson(knowledge["blue"], blue_lesson)
             print(f"Blue learned: {blue_lesson}")
 
         # 5. Save updated knowledge
