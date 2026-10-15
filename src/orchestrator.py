@@ -114,13 +114,11 @@ class Orchestrator:
         return self.red_agent if self.state.current_agent_role == "red" else self.blue_agent
 
     def _check_red_victory(self, output: str) -> bool:
-        # Simple check: if the output of a command contains the flag
-        # In a real scenario, we might check for a specific regex or the content of flag_path
-        # For this implementation, we check if the output looks like a flag (e.g., "FLAG{...}")
-        # or if it's the result of reading flag_path.
-        if "FLAG{" in output:
-            return True
-        return False
+        """Red read the flag if its output carries the flag marker. The box's
+        flag is `FLAG{...}`; match case-insensitively so a lower/mixed-case read
+        still registers. (A genuine read is also corroborated by blue's auth-log
+        detection, which back-fills red's access if this misses.)"""
+        return "flag{" in output.lower()
 
     def _check_blue_victory(self, output: str) -> bool:
         """True only when blue has CONFIRMED access to the objective (the flag).
@@ -228,12 +226,19 @@ class Orchestrator:
     )
 
     def _is_error_output(self, output: str) -> bool:
-        """Return True when a command's output is clearly an error / non-actionable."""
-        lowered = output.lower()
-        for pattern in self._RED_ERROR_PATTERNS:
-            if pattern in lowered:
-                return True
-        return False
+        """True only when a command produced NOTHING actionable — every non-empty
+        line reads as an error. Output that mixes real results with a few error
+        lines (e.g. `find` printing hits alongside some 'Permission denied') is
+        still useful, so it is not an error. (Previously a single error word
+        anywhere mislabeled the whole output, suppressing legit foothold credit
+        and skewing the stall/fail heuristic.)"""
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        if not lines:
+            return True
+        return all(
+            any(p in ln.lower() for p in self._RED_ERROR_PATTERNS)
+            for ln in lines
+        )
 
     def _tool_call_signature(self, tool_call: Dict[str, Any]) -> str:
         function = tool_call.get("function", {})
@@ -620,13 +625,9 @@ class Orchestrator:
             self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": outcome})
             return outcome
 
-        # Blue victory conditions (two ways to win):
-        # 1. Red is stalled (no tool calls) for stall_limit consecutive turns.
-        # 2. Red is failing — repeatedly making tool calls that all produce
-        #    errors / non-actionable output — for fail_limit consecutive turns.
-        #    This models blue having effectively contained / denied red's activity.
-        if self.state.red_stalled_turns >= self.stall_limit or \
-           self.state.red_failed_turns >= self.stall_limit:
+        # Blue wins when red gives up (stalls or only errors for stall_limit
+        # turns) — but only when blue is actually defending. See _stall_blue_win.
+        if self._stall_blue_win():
             self.state.blue_victory = True
             self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": "blue"})
             return "blue"
@@ -719,6 +720,21 @@ class Orchestrator:
                     f"and you did not detect or contain it in time.")
 
         return "OUTCOME: Stalemate — neither side decisively won within the turn limit."
+
+    def _stall_blue_win(self) -> bool:
+        """A red stall/failure streak hands blue the win — but only when blue is
+        actually defending. In observe mode blue holds containment by design, so
+        a red that gives up is a stalemate, not a blue victory (the episode just
+        runs out its turns).
+
+        shortcut: in observe this lets a fully-stalled red burn the remaining
+        turns rather than ending early; upgrade to an early draw-return if that
+        ever wastes meaningful cloud budget.
+        """
+        if self.observe:
+            return False
+        return (self.state.red_stalled_turns >= self.stall_limit or
+                self.state.red_failed_turns >= self.stall_limit)
 
     def _resolve_outcome(self) -> Optional[str]:
         """Decide the graded winner from access/detection timing, or None.
