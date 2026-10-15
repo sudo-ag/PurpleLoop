@@ -99,6 +99,14 @@ own control session — i.e. any IP in its `suspicious_ips` list — that IP is 
 attacker. Call `contain_attacker` with that IP IMMEDIATELY to block them at the
 firewall. Containing the attacker BEFORE they read the flag defeats the attack —
 that is the goal. Do NOT wait for a confirmed flag read; by then it is too late.
+
+REMEDIATION — LOCK THE COMPROMISED ACCOUNT:
+When `investigate_logs` shows a successful authentication by a user that is NOT
+your own control session, that account is compromised — the attacker is operating
+as it. Call `remediate_account` with that username to lock it and kill its
+sessions, which neutralizes the foothold and any in-progress privilege escalation.
+This is a stronger stop than a network block when the attacker is already on the
+host. (vagrant/root are refused — you cannot lock the defender or the host.)
 Blocking your own control IP is refused automatically, so contain whatever
 suspicious_ips reports without hesitation.
 
@@ -381,6 +389,23 @@ class Agent:
                         },
                     },
                 },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'remediate_account',
+                        'description': "Neutralize a compromised account on the target: lock it and kill its sessions (reversible). Call this once you identify the account an attacker logged into — a successful authentication by a user that is NOT your own control session. This cuts off the attacker's foothold and any in-progress privilege escalation before they reach root. Refuses privileged accounts (vagrant/root). Takes a user argument.",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'user': {
+                                    'type': 'string',
+                                    'description': 'The compromised account to lock and kill, e.g. "chewbacca".',
+                                },
+                            },
+                            'required': ['user'],
+                        },
+                    },
+                },
             ]
         else:
             self.tools = [
@@ -563,6 +588,20 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
+
+        elif tool_call['function']['name'] == 'remediate_account':
+            user = tool_call['function']['arguments'].get('user', "")
+            if self.observe:
+                # Training mode: don't actually lock the account — let red keep
+                # going so blue can keep observing. Reported as a held action.
+                return json.dumps({"tool": "remediate_account", "status": "observed",
+                                   "remediated": False, "target_user": user,
+                                   "note": "observe mode: remediation held for training"})
+            try:
+                result = self.executor.remediate_account(user)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "remediate_account", "status": "error", "error": str(e), "target_user": user})
 
         return "Unsupported tool call."
 

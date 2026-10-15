@@ -120,6 +120,8 @@ class SimulationState:
     blue_detect_turn: Optional[int] = None  # turn blue first raised a confirmed BREACH
     blue_contain_turn: Optional[int] = None  # turn blue firewalled the real attacker IP
     contained_ip: Optional[str] = None       # the attacker IP blue contained
+    blue_remediate_turn: Optional[int] = None  # turn blue locked the compromised account
+    remediated_user: Optional[str] = None      # the account blue remediated
     red_tiers: Dict[int, int] = field(default_factory=dict)        # tier -> turn red first reached it
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
@@ -244,6 +246,18 @@ class Orchestrator:
             args = fn.get("arguments", {}) or {}
             if args.get("username") and args.get("password"):
                 self.state.red_foothold_cred = {"user": args["username"], "pwd": args["password"]}
+
+    def _check_blue_remediation(self, output: str) -> Optional[str]:
+        """Return the account blue successfully remediated (locked + killed) this
+        turn, or None."""
+        try:
+            data = json.loads(output)
+        except Exception:
+            return None
+        if (isinstance(data, dict) and data.get("tool") == "remediate_account"
+                and data.get("remediated") is True):
+            return data.get("target_user")
+        return None
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
@@ -667,6 +681,15 @@ class Orchestrator:
                                 "blue_containment",
                                 {"turn": self.state.turn, "ip": contained_ip},
                             )
+                    if role == "blue" and self.state.blue_remediate_turn is None:
+                        remediated_user = self._check_blue_remediation(output)
+                        if remediated_user:
+                            self.state.blue_remediate_turn = self.state.turn
+                            self.state.remediated_user = remediated_user
+                            self._notify_dashboard(
+                                "blue_remediation",
+                                {"turn": self.state.turn, "user": remediated_user},
+                            )
 
                     state_summary += f"\nTool Call: {tool_call['function']['name']} -> Output: {output}"
 
@@ -738,6 +761,7 @@ class Orchestrator:
         contained the attacker at/before that tier). `defended` is None for a
         tier red never reached (no attack to defend)."""
         contain = self.state.blue_contain_turn
+        remediate = self.state.blue_remediate_turn
         board: List[Dict[str, Any]] = []
         for tier in TIERS:
             reached = self.state.red_tiers.get(tier)
@@ -746,9 +770,12 @@ class Orchestrator:
             if reached is None:
                 defended: Optional[bool] = None
             else:
-                contained_first = contain is not None and contain <= reached
+                stopped_first = min(
+                    [t for t in (contain, remediate) if t is not None], default=None
+                )
+                stopped = stopped_first is not None and stopped_first <= reached
                 in_time = detect is not None and reached <= detect <= reached + self.detect_within_turns
-                defended = bool(contained_first or in_time)
+                defended = bool(stopped or in_time)
             board.append({
                 "tier": tier,
                 "name": TIER_NAMES[tier],
@@ -832,10 +859,15 @@ class Orchestrator:
         detect = self.state.blue_detect_turn
         contain = self.state.blue_contain_turn
 
-        # Prevention beats detection: if blue firewalled the attacker before it
-        # reached the objective, the attack is stopped and blue wins. (Containment
-        # physically blocks red, so access normally stays None once this fires.)
-        if contain is not None and (access is None or contain <= access):
+        # Prevention beats detection: if blue firewalled the attacker IP OR locked
+        # the compromised account before red reached the objective, the attack is
+        # stopped and blue wins. (Both physically cut red off, so access normally
+        # stays None once this fires.)
+        prevent = min(
+            [t for t in (contain, self.state.blue_remediate_turn) if t is not None],
+            default=None,
+        )
+        if prevent is not None and (access is None or prevent <= access):
             self.state.blue_victory = True
             return "blue"
 

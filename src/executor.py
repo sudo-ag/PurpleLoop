@@ -292,6 +292,9 @@ class ToolExecutor:
         # Attacker IPs blue has firewalled on the target this run; removed at
         # disconnect so the box isn't left blocking traffic across runs.
         self._contained_ips: List[str] = []
+        # Accounts blue has locked + killed this run; unlocked at disconnect so
+        # the box isn't left with disabled accounts across runs.
+        self._remediated_users: List[str] = []
         # Whether blue has armed the inbound-connection LOG rule (for network
         # visibility into an attacker's recon); removed at disconnect.
         self._conn_logging: bool = False
@@ -416,6 +419,7 @@ class ToolExecutor:
         """Tears down the ControlMaster and cleans up the socket."""
         # Remove any firewall / logging rules blue added, before the master goes.
         self._flush_contained()
+        self._restore_remediated()
         self._disable_connection_logging()
         if self._master_alive():
             subprocess.run(
@@ -785,6 +789,57 @@ class ToolExecutor:
                 except Exception:
                     pass
         self._contained_ips.clear()
+
+    def remediate_account(self, user: str) -> Dict[str, Any]:
+        """Neutralize a compromised account: lock its password (usermod -L) and
+        kill its sessions/processes (pkill -u), cutting off red's foothold and any
+        in-progress escalation. Refuses privileged / the defender's own account so
+        blue cannot lock itself or break the host. Reversible: unlocked at
+        disconnect so episodes start clean."""
+        user = (user or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "remediate_account",
+            "target_user": user,
+            "remediated": False,
+            "assessment": "INFO",
+            "summary": "",
+        }
+        if not user or not all(c.isalnum() or c in "_-" for c in user):
+            findings["summary"] = f"'{user}' is not a valid account name; nothing remediated."
+            return findings
+        if user in _PROTECTED_ACCOUNTS or user == self.user:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = (
+                f"Refused: '{user}' is a protected/defender account — locking it "
+                "would harm the defender or the host."
+            )
+            return findings
+        out = self.execute(
+            f"sudo usermod -L {user} && (sudo pkill -KILL -u {user}; echo PL_REMEDIATED)"
+        )
+        if "PL_REMEDIATED" in out:
+            if user not in self._remediated_users:
+                self._remediated_users.append(user)
+            findings["remediated"] = True
+            findings["assessment"] = "REMEDIATED"
+            findings["summary"] = (
+                f"Account '{user}' locked and its sessions killed; the attacker's "
+                "foothold on that account is neutralized."
+            )
+        else:
+            findings["summary"] = f"Failed to remediate '{user}': {out.strip()[:160]}"
+        return findings
+
+    def _restore_remediated(self) -> None:
+        """Unlock accounts this executor locked (best-effort), so episodes start clean."""
+        if not self._remediated_users or not self._master_alive():
+            return
+        for user in list(self._remediated_users):
+            try:
+                self.execute_remote(f"sudo usermod -U {user} 2>/dev/null || true")
+            except Exception:
+                pass
+        self._remediated_users.clear()
 
     # Scope tightly: only NEW inbound TCP SYNs on real interfaces. The old
     # unscoped rule logged every packet (loopback, broadcast, DNS, multicast),
@@ -1795,6 +1850,10 @@ class ToolExecutor:
 def _find_all_ip(text: str) -> List[str]:
     """Extract IPv4 addresses from a string."""
     return re.findall(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', text)
+
+
+# Accounts blue must never lock/kill — the defender's admin and root.
+_PROTECTED_ACCOUNTS = frozenset({"root", "vagrant"})
 
 
 def _is_ipv4(value: str) -> bool:
