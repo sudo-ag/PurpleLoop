@@ -73,3 +73,36 @@ def test_reset_episode_clears_per_episode_state_keeps_knowledge():
     assert red.has_foothold is False
     assert red.phase == "initial_enum"
     assert red.experience == ["lesson A"]   # knowledge survives the reset
+
+
+# --- Task 10: standalone run() loop ---------------------------------------
+
+def test_red_objective_met_on_flag_in_history():
+    from src.trajectory import Turn
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.history = [Turn(0, "", {"function": {"name": "execute_command", "arguments": {}}}, "FLAG{purple_loop_victory}")]
+    assert red.objective_met() is True
+
+
+def test_red_run_stops_at_max_turns_without_objective(monkeypatch):
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    monkeypatch.setattr(red, "decide", lambda: "noop")       # never wins
+    traj = red.run(max_turns=3)
+    assert isinstance(traj, Trajectory) and traj.objective_met is False
+    assert len(traj.turns) <= 3
+
+
+def test_run_survives_executor_error(monkeypatch):
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    def boom():
+        raise RuntimeError("ssh died")
+    monkeypatch.setattr(red, "decide", boom)                 # partial, no crash
+    traj = red.run(max_turns=2)
+    assert isinstance(traj, Trajectory)
+
+
+def test_blue_monitor_terminates_at_max_turns(monkeypatch):
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    monkeypatch.setattr(blue, "decide", lambda: "watch")     # a monitor never "wins"
+    traj = blue.run(max_turns=2)
+    assert len(traj.turns) <= 2 and traj.objective_met is False

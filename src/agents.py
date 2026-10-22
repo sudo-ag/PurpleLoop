@@ -632,7 +632,43 @@ class Agent:
     def decide(self) -> Union[Dict[str, Any], str]:
         """One turn: build own observation, self-steer, act. The standalone loop
         and the arena both call this; neither feeds the agent a state summary."""
-        return self.act(self.build_observation())
+        self._last_observation = self.build_observation()
+        return self.act(self._last_observation)
+
+    def _execute(self, action: Any) -> str:
+        """Run the action's tool calls on this agent's executor; a text action
+        executes nothing and returns ''."""
+        if isinstance(action, list):
+            return "\n".join(str(self.process_tool_call(call)) for call in action)
+        return ""
+
+    def objective_met(self) -> bool:
+        """Has this agent completed its campaign? Red overrides; a monitor (blue)
+        and the base never self-complete."""
+        return False
+
+    def run(self, max_turns: int) -> "Trajectory":
+        """Drive the agent standalone — no Orchestrator. observe -> decide ->
+        execute -> record, until the objective is met or max_turns, resilient to
+        a failing turn (returns a partial trajectory rather than crashing)."""
+        from src.trajectory import Trajectory
+        traj = Trajectory(role=self.role)
+        for _ in range(max_turns):
+            obs = getattr(self, "_last_observation", "")
+            try:
+                action = self.decide()
+                obs = self._last_observation
+                output = self._execute(action)
+            except Exception as e:
+                self.record_turn(obs, None, f"run error: {e}")
+                traj.turns.append(self.history[-1])
+                break
+            self.record_turn(obs, action, output)
+            traj.turns.append(self.history[-1])
+            if self.objective_met():
+                traj.objective_met = True
+                break
+        return traj
 
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
@@ -860,6 +896,10 @@ class RedAgent(Agent):
         super().reset_episode()
         self.phase = "initial_enum"
         self.foothold_cred = None
+
+    def objective_met(self) -> bool:
+        """Red's campaign is done once it has read the flag (root)."""
+        return any("FLAG{" in str(t.output) for t in self.history)
 
     def _refresh_foothold(self) -> None:
         """Set has_foothold + remember the earned cred from red's OWN history.
