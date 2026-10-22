@@ -15,6 +15,14 @@ def _orch(**kw) -> Orchestrator:
     return Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), **kw)
 
 
+def _real_orch(**kw) -> Orchestrator:
+    # Real agents so _build_state_summary (which calls agent self-steering) yields
+    # a real string rather than a MagicMock.
+    from src.agents import RedAgent, BlueAgent
+    from src.mock_executor import MockExecutor
+    return Orchestrator(RedAgent(executor=MockExecutor()), BlueAgent(executor=MockExecutor()), **kw)
+
+
 # --- F4: error-output classification ---------------------------------------
 
 def test_mixed_output_with_some_error_lines_is_still_useful():
@@ -124,7 +132,7 @@ def test_non_usecredential_tool_does_not_capture():
 
 
 def test_red_summary_resurfaces_cred_blue_never_sees_it():
-    o = _orch()
+    o = _real_orch()
     o.state.red_foothold_cred = {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
     red_summary = o._build_state_summary("red")
     assert "@dm1n1str8r" in red_summary and "sudo -S" in red_summary
@@ -132,5 +140,5 @@ def test_red_summary_resurfaces_cred_blue_never_sees_it():
 
 
 def test_red_summary_has_no_cred_line_before_foothold():
-    o = _orch()
+    o = _real_orch()
     assert "FOOTHOLD CREDENTIAL" not in o._build_state_summary("red")

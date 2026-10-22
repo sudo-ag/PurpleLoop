@@ -387,40 +387,6 @@ class Orchestrator:
                     add(data.get("suspicious_ips"))                # confirmed breach
         return confirmed
 
-    def _repeat_nudge(self, role: str) -> str:
-        """Nudge an agent that spent its whole last turn re-issuing tool calls it
-        had already tried, with no new action — the loop both sides fell into.
-        Blue's `investigate_logs` heartbeat is excluded: it is meant to repeat.
-        """
-        exclude = {"investigate_logs"} if role == "blue" else set()
-        entries = []  # (turn, sig, label, out) for this role's tool calls, in order
-        for entry in self.state.history:
-            if entry.get("role") != role or "tool" not in entry:
-                continue
-            fn = entry.get("tool", {}).get("function", {})
-            name = fn.get("name", "")
-            if not name or name in exclude:
-                continue
-            args = fn.get("arguments", {}) or {}
-            sig = name + ":" + json.dumps(args, sort_keys=True, default=str)
-            cmd = args.get("command") if isinstance(args, dict) else None
-            label = f"`{cmd}`" if isinstance(cmd, str) else f"`{name}` {args}"
-            out = str(entry.get("output", "")).strip().replace("\n", " ")
-            entries.append((entry.get("turn"), sig, label, out))
-        if len(entries) < 2:
-            return ""
-        last_turn = entries[-1][0]
-        last = [e for e in entries if e[0] == last_turn]
-        earlier = {e[1] for e in entries if e[0] != last_turn}
-        if not last or any(e[1] not in earlier for e in last):
-            return ""  # nothing done, or at least one genuinely new action — not looping
-        tried = list(dict.fromkeys(f"{label} -> {out[:80]}" for _, _, label, out in last))
-        return (
-            "\nRepetition check: last turn you only repeated actions you had already "
-            f"tried ({'; '.join(tried)}) with no new result. Stop repeating these — "
-            "try a genuinely different approach."
-        )
-
     def _build_state_summary(self, role: str) -> str:
         state_summary = (
             f"Turn {self.state.turn}. Current Role: {role}. "
@@ -438,7 +404,7 @@ class Orchestrator:
                 )
         elif role == "blue":
             state_summary += f"\n{self.blue_agent.tool_guidance(observe=self.observe, confirmed_attackers=self._blue_confirmed_attackers(), contained=self.state.blue_contain_turn is not None)}"
-        state_summary += self._repeat_nudge(role)
+        state_summary += (self.red_agent if role == "red" else self.blue_agent).repeat_nudge()
         return state_summary
 
     def step(self) -> Optional[str]:

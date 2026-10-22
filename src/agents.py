@@ -532,6 +532,40 @@ class Agent:
         """Per-turn tool-steering. Blue overrides; base is a safe no-op."""
         return ""
 
+    def repeat_nudge(self) -> str:
+        """Nudge the agent if its whole last turn re-issued calls it had already
+        tried, with no new action. Groups by observation — all calls in one turn
+        share it. Blue's `investigate_logs` heartbeat is excluded (meant to repeat).
+        """
+        exclude = {"investigate_logs"} if self.role == "blue" else set()
+        entries = []  # (observation, sig, label, out) for this agent's tool calls
+        for t in self.history:
+            if not isinstance(t.action, dict):
+                continue
+            fn = t.action.get("function", {})
+            name = fn.get("name", "")
+            if not name or name in exclude:
+                continue
+            args = fn.get("arguments", {}) or {}
+            sig = name + ":" + json.dumps(args, sort_keys=True, default=str)
+            cmd = args.get("command") if isinstance(args, dict) else None
+            label = f"`{cmd}`" if isinstance(cmd, str) else f"`{name}` {args}"
+            out = str(t.output).strip().replace("\n", " ")
+            entries.append((t.observation, sig, label, out))
+        if len(entries) < 2:
+            return ""
+        last_obs = entries[-1][0]
+        last = [e for e in entries if e[0] == last_obs]
+        earlier = {e[1] for e in entries if e[0] != last_obs}
+        if not last or any(e[1] not in earlier for e in last):
+            return ""  # nothing done, or a genuinely new action — not looping
+        tried = list(dict.fromkeys(f"{label} -> {out[:80]}" for _, _, label, out in last))
+        return (
+            "\nRepetition check: last turn you only repeated actions you had already "
+            f"tried ({'; '.join(tried)}) with no new result. Stop repeating these — "
+            "try a genuinely different approach."
+        )
+
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
         Processes the current state and returns either a tool call or a text response.

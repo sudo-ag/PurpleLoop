@@ -599,3 +599,27 @@ def test_blueagent_contain_order_on_confirmed_attacker():
     blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
     g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
     assert "contain_attacker" in g and "192.168.64.11" in g
+
+
+# --- Task 6: repeat-nudge self-contained in Agent -------------------------
+
+def test_repeat_nudge_fires_on_repeated_tool_calls():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    call = {"function": {"name": "execute_command", "arguments": {"command": "ls"}}}
+    # Two different turns (distinct observations) issuing the SAME call → repeat.
+    red.history = [Turn(0, "obs-turn-1", call, "a"), Turn(1, "obs-turn-2", call, "a")]
+    assert "Repetition check" in red.repeat_nudge()
+
+
+def test_repeat_nudge_silent_on_new_action():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    c1 = {"function": {"name": "execute_command", "arguments": {"command": "ls"}}}
+    c2 = {"function": {"name": "execute_command", "arguments": {"command": "whoami"}}}
+    red.history = [Turn(0, "obs-turn-1", c1, "a"), Turn(1, "obs-turn-2", c2, "b")]
+    assert red.repeat_nudge() == ""
