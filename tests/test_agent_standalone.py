@@ -106,3 +106,16 @@ def test_blue_monitor_terminates_at_max_turns(monkeypatch):
     monkeypatch.setattr(blue, "decide", lambda: "watch")     # a monitor never "wins"
     traj = blue.run(max_turns=2)
     assert len(traj.turns) <= 2 and traj.objective_met is False
+
+
+def test_run_records_dict_shaped_turns_its_brain_can_read(monkeypatch):
+    # Regression (reviewer CRITICAL): run() must record one dict-action Turn per
+    # tool call, or the agent's own steering (which filters isinstance(action,dict))
+    # reads an empty history and self-steers with a dead brain.
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    calls = [{"function": {"name": "execute_command", "arguments": {"command": "id"}}}]
+    monkeypatch.setattr(red, "act", lambda obs: calls)
+    monkeypatch.setattr(red, "process_tool_call", lambda c: "uid=1120(lando)")
+    traj = red.run(max_turns=1)
+    assert red._tool_turns(), "run() must record dict-shaped tool turns the brain can read"
+    assert traj.turns and isinstance(traj.turns[-1].action, dict)

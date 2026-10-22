@@ -635,13 +635,6 @@ class Agent:
         self._last_observation = self.build_observation()
         return self.act(self._last_observation)
 
-    def _execute(self, action: Any) -> str:
-        """Run the action's tool calls on this agent's executor; a text action
-        executes nothing and returns ''."""
-        if isinstance(action, list):
-            return "\n".join(str(self.process_tool_call(call)) for call in action)
-        return ""
-
     def objective_met(self) -> bool:
         """Has this agent completed its campaign? Red overrides; a monitor (blue)
         and the base never self-complete."""
@@ -650,7 +643,11 @@ class Agent:
     def run(self, max_turns: int) -> "Trajectory":
         """Drive the agent standalone — no Orchestrator. observe -> decide ->
         execute -> record, until the objective is met or max_turns, resilient to
-        a failing turn (returns a partial trajectory rather than crashing)."""
+        a failing turn (returns a partial trajectory rather than crashing).
+
+        Records ONE Turn per tool call (a dict action), the same shape the
+        orchestrator records — so the agent's own steering (which filters
+        isinstance(action, dict)) reads this history back correctly."""
         from src.trajectory import Trajectory
         traj = Trajectory(role=self.role)
         for _ in range(max_turns):
@@ -658,13 +655,15 @@ class Agent:
             try:
                 action = self.decide()
                 obs = self._last_observation
-                output = self._execute(action)
+                calls = action if isinstance(action, list) else [action]
+                for call in calls:
+                    output = self.process_tool_call(call) if isinstance(call, dict) else ""
+                    self.record_turn(obs, call, output)
+                    traj.turns.append(self.history[-1])
             except Exception as e:
                 self.record_turn(obs, None, f"run error: {e}")
                 traj.turns.append(self.history[-1])
                 break
-            self.record_turn(obs, action, output)
-            traj.turns.append(self.history[-1])
             if self.objective_met():
                 traj.objective_met = True
                 break
