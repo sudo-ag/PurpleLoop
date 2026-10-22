@@ -73,8 +73,12 @@ _RED_PHASE_GUIDANCE = {
         "-print 2>/dev/null` or check common dirs. Do not repeat whoami/id."
     ),
     "privilege_check": (
-        "Next objective: get a usable privilege path. Try `sudo -n -l`, then SUID "
-        "and cron checks if sudo is unavailable."
+        "Next objective: you have a FOOTHOLD but are NOT root — ESCALATE before "
+        "chasing the flag (you cannot read it as this user). Check your groups "
+        "(`id`): if you are in the `docker` group that is a one-shot root win — "
+        "`docker run -v /:/mnt --rm alpine cat /mnt/root/flag.txt` (no `-it` over "
+        "SSH). Otherwise try `sudo -n -l`, SUID binaries "
+        "(`find / -perm -4000 2>/dev/null`), and writable cron."
     ),
 }
 
@@ -125,9 +129,10 @@ class SimulationState:
     red_tiers: Dict[int, int] = field(default_factory=dict)        # tier -> turn red first reached it
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
+    staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
 
 class Orchestrator:
-    def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False):
+    def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False, remediate_grace: int = 0):
         self.red_agent = red_agent
         self.blue_agent = blue_agent
         self.max_tools_per_turn = max_tools_per_turn
@@ -142,6 +147,12 @@ class Orchestrator:
         # Observation/training mode: suppress blue's containment order so blue
         # observes the attacker's full approach instead of ending at turn 1.
         self.observe = observe
+        # Grace window (turns) between red earning a foothold and blue's account
+        # lock actually taking effect: blue still detects on time, but its lock is
+        # held for this many turns so red gets a window to escalate before being
+        # cut off — models a defender's response lag and keeps the T1 contest from
+        # being an instant-lock auto-win. 0 disables it (instant lock).
+        self.remediate_grace = remediate_grace
         self.state = SimulationState()
 
 
@@ -258,6 +269,40 @@ class Orchestrator:
                 and data.get("remediated") is True):
             return data.get("target_user")
         return None
+
+    def _remediation_held(self) -> bool:
+        """True while blue's account lock is inside the post-foothold grace window:
+        the lock is staged but NOT executed, so red stays logged in and gets turns
+        to escalate before being cut off."""
+        foothold = self.state.red_tiers.get(TIER_FOOTHOLD)
+        return (self.remediate_grace > 0 and foothold is not None
+                and self.state.turn < foothold + self.remediate_grace)
+
+    def _stage_remediation(self, tool_call: Dict[str, Any]) -> str:
+        """Record blue's lock request without executing it (grace window). Returns
+        a `remediated: False` result so blue is not credited a containment yet and
+        the episode does not end on it."""
+        user = (tool_call.get("function", {}).get("arguments", {}) or {}).get("user", "")
+        self.state.staged_remediation_user = user
+        return json.dumps({
+            "tool": "remediate_account", "target_user": user, "remediated": False,
+            "assessment": "STAGED",
+            "summary": (f"Attacker detected on '{user}'; account lock staged "
+                        "(response lag) and not yet applied."),
+        })
+
+    def _apply_staged_remediation(self) -> None:
+        """Execute the lock blue requested during the grace window, once that window
+        has closed. Idempotent; a no-op if nothing is staged or blue already locked."""
+        user = self.state.staged_remediation_user
+        if not user or self._remediation_held() or self.state.blue_remediate_turn is not None:
+            return
+        self.state.staged_remediation_user = None
+        findings = self.blue_agent.executor.remediate_account(user)
+        if isinstance(findings, dict) and findings.get("remediated"):
+            self.state.blue_remediate_turn = self.state.turn
+            self.state.remediated_user = user
+            self._notify_dashboard("blue_remediation", {"turn": self.state.turn, "user": user})
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
@@ -391,6 +436,13 @@ class Orchestrator:
 
         if self._discovered_flag_paths() or self._root_available():
             self.state.red_phase = "flag_read"
+            return
+        # Earned, unprivileged foothold: escalate BEFORE hunting the flag. The
+        # handed-era "uid= -> flag_discovery" step below assumes the flag is
+        # already reachable; a non-root foothold cannot read it and must find a
+        # privesc path first, or it burns its turns on an unreadable flag.
+        if TIER_FOOTHOLD in self.state.red_tiers and not self._root_available():
+            self.state.red_phase = "privilege_check"
             return
         if "permission denied" in combined or "sudo -l" in combined or "sudo -n -l" in combined:
             self.state.red_phase = "privilege_check"
@@ -584,6 +636,11 @@ class Orchestrator:
         agent = self.get_current_agent()
         role = self.state.current_agent_role
 
+        # Grace window closed? Apply the lock blue staged during it (blue's action,
+        # so only on blue's turn — applying on red's turn would preempt its window).
+        if role == "blue":
+            self._apply_staged_remediation()
+
         # Notify dashboard of turn start
         self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": None})
 
@@ -631,7 +688,14 @@ class Orchestrator:
                     # Notify dashboard of tool call
                     self._notify_dashboard("agent_action", {"role": role, "type": "tool", "content": str(tool_call)})
 
-                    output = agent.process_tool_call(tool_call)
+                    if (role == "blue"
+                            and tool_call.get("function", {}).get("name") == "remediate_account"
+                            and self._remediation_held()):
+                        # Blue detected the foothold in time, but its lock is held
+                        # for the grace window — stage it instead of executing.
+                        output = self._stage_remediation(tool_call)
+                    else:
+                        output = agent.process_tool_call(tool_call)
                     tools_called += 1
                     self.state.history.append({"role": role, "turn": self.state.turn, "tool": tool_call, "output": output})
 

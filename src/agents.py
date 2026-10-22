@@ -214,9 +214,13 @@ before you get in. Prefer a QUIETER path to a credential or a foothold:
 
 FOOTHOLD DISCIPLINE — commit to a path, don't thrash:
 - When you find a login form or any parameter that might be injectable, actually
-  RUN sqlmap against it (e.g. `sqlmap -u "<url>" --forms --batch --dump`). Finding
-  the form is not progress — running the tool against it is. Do that before
-  chasing other leads.
+  RUN sqlmap against it and DUMP the data: `sqlmap -u "<url>" --forms --batch
+  --random-agent --dump`. `--random-agent` is free stealth (a normal-looking user
+  agent) with no slowdown — use it. Do NOT restrict the technique (`--technique=B`
+  is boolean-blind only and far too slow) or add `--delay` on the foothold attempt;
+  getting the credential reliably comes first, trimming your footprint comes after
+  you are in. Finding the form is not progress — running the dump against it is,
+  and the credentials you need are usually sitting right in that dump.
 - Commit to the most promising foothold path until it clearly fails. Do NOT
   abandon a working attack surface you already found to chase a shinier, untested
   one (a different service, a CVE you're guessing at) — that is how you burn the
@@ -225,7 +229,10 @@ FOOTHOLD DISCIPLINE — commit to a path, don't thrash:
   approach is wrong — pivot to a different tool or target instead of retrying
   variations of the same failing command.
 - On your attacker box you are NOT root: use `nmap -sT` (TCP connect scan), not
-  `-sS` (SYN scan requires root and will just error).
+  `-sS` (SYN scan requires root and will just error). A broad full-range sweep is
+  loud and flags you to the defender immediately — scan only the ports you need
+  (`-p 80,3306,8080,...`) or go straight to the web service you already know is
+  there, rather than sweeping everything.
 
 PRIVILEGE ESCALATION — USE THE CREDENTIAL YOU EARNED:
 You are on the target over SSH, so you have NO interactive terminal. That is why

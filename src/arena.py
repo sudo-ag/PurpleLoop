@@ -259,6 +259,7 @@ def run_episodes(
     earned: bool = False,
     observe: bool = False,
     detect_within_turns: int = 3,
+    remediate_grace: int = 0,
     reset_fn: Optional[ResetFn] = None,
     reset: bool = True,
     episodes_path: Path = EPISODES_PATH,
@@ -282,6 +283,7 @@ def run_episodes(
         orch = Orchestrator(
             red_agent=red, blue_agent=blue,
             detect_within_turns=detect_within_turns, observe=observe,
+            remediate_grace=remediate_grace,
         )
         winner = orch.run_simulation(max_turns=max_turns)
         card = build_scorecard(orch.state, winner, i,
@@ -335,13 +337,15 @@ def main() -> None:
     p.add_argument("--earned", action="store_true", help="Red must brute-force creds from its attacker box first")
     p.add_argument("--observe", action="store_true", help="Blue training mode: investigate and learn but hold containment, so blue sees more of red's kill chain")
     p.add_argument("--detect-within-turns", type=int, default=3)
+    p.add_argument("--remediate-grace", type=int, default=4, help="Turns blue's account lock is held after red's foothold, giving red a window to escalate (0 = instant lock). ~2 raw turns per red window-turn due to red/blue alternation, so 4 ≈ two escalation turns.")
     p.add_argument("--no-reset", action="store_true", help="Skip the scripted between-episode reset")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
         user=a.user, pwd=a.pwd, jump_host=a.jump_host, jump_user=a.jump_user,
         jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned, observe=a.observe,
-        detect_within_turns=a.detect_within_turns, reset=not a.no_reset,
+        detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
+        reset=not a.no_reset,
     )
 
 

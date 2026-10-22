@@ -1,7 +1,7 @@
 import pytest
 import json
 from unittest.mock import MagicMock
-from src.orchestrator import Orchestrator, SimulationState
+from src.orchestrator import Orchestrator, SimulationState, TIER_FOOTHOLD
 from src.agents import Agent
 from src.executor import ToolExecutor
 
@@ -329,6 +329,29 @@ def test_red_phase_advances_to_flag_discovery_after_basic_enum():
     assert "Red Phase: flag_discovery" in summary
     assert "find / -maxdepth 4 -name flag.txt" in summary
     assert "Do not repeat whoami/id" in summary
+
+def test_red_phase_unprivileged_foothold_goes_to_privilege_check_not_flag_discovery():
+    # Earned red lands as a non-root user (uid=1120, group users only) and has no
+    # NOPASSWD. It must be steered to ESCALATE, not to hunt an unreadable flag —
+    # otherwise it burns its grace window on a doomed `find flag.txt`.
+    red_agent = MagicMock(spec=Agent)
+    blue_agent = MagicMock(spec=Agent)
+    orch = Orchestrator(red_agent, blue_agent)
+    orch.state.red_tiers[TIER_FOOTHOLD] = 2
+    orch.state.history = [
+        {
+            "role": "red",
+            "tool": {"function": {"name": "execute_command", "arguments": {"command": "id"}}},
+            "output": "uid=1120(lando_calrissian) gid=100(users) groups=100(users)",
+        },
+    ]
+
+    summary = orch._build_state_summary("red")
+
+    assert "Red Phase: privilege_check" in summary
+    assert "ESCALATE" in summary
+    assert "flag_discovery" not in summary
+
 
 def test_red_phase_advances_to_flag_read_after_finding_flag_path():
     red_agent = MagicMock(spec=Agent)
