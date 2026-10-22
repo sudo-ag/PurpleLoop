@@ -1,31 +1,29 @@
-"""Blue breadth steering rotates least-recently-used instead of sticking."""
-from unittest.mock import MagicMock
+"""Blue breadth steering rotates least-recently-used instead of sticking.
 
-from src.agents import Agent
-from src.orchestrator import Orchestrator
-
-
-def _orch() -> Orchestrator:
-    return Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
+The steering now lives on BlueAgent, computed from the agent's own history.
+"""
+from src.agents import BlueAgent
+from src.trajectory import Turn
+from src.mock_executor import MockExecutor
 
 
-def _blue(name: str) -> dict:
-    return {"role": "blue", "tool": {"function": {"name": name, "arguments": {}}}, "output": "ok"}
+def _turn(name: str) -> Turn:
+    return Turn(0, "", {"function": {"name": name, "arguments": {}}}, "ok")
 
 
 def test_breadth_rotates_to_least_recently_used():
-    orch = _orch()
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
     # Every breadth tool used once (connections oldest, network newest), last = logs.
-    orch.state.history = [
-        _blue("investigate_connections"),
-        _blue("investigate_file_access"),
-        _blue("investigate_processes"),
-        _blue("investigate_users"),
-        _blue("investigate_cron"),
-        _blue("investigate_network"),
-        _blue("investigate_logs"),
-    ]
-    guidance = orch._blue_tool_guidance()
+    blue.history = [_turn(n) for n in (
+        "investigate_connections",
+        "investigate_file_access",
+        "investigate_processes",
+        "investigate_users",
+        "investigate_cron",
+        "investigate_network",
+        "investigate_logs",
+    )]
+    guidance = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
     # Oldest-used breadth tool is connections → that is what blue is steered to,
     # not the old default (investigate_file_access).
     assert "`investigate_connections`" in guidance

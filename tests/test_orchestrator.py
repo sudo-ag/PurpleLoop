@@ -308,11 +308,12 @@ def test_red_text_response_retries_for_tool_call():
     red_agent.process_tool_call.assert_called_once_with(tool_call)
 
 def test_blue_guidance_orders_containment_only_with_malice_evidence():
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
     red_agent = MagicMock(spec=Agent)
     red_agent.executor = MagicMock()
     red_agent.executor.jump_host = "192.168.64.11"
-    blue_agent = MagicMock(spec=Agent)
-    blue_agent.executor = MagicMock()
+    blue_agent = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
     blue_agent.executor.control_source_ip = "192.168.64.1"
     orch = Orchestrator(red_agent, blue_agent)
 
@@ -336,11 +337,12 @@ def test_blue_guidance_orders_containment_only_with_malice_evidence():
 
 
 def test_blue_guidance_contains_on_brute_force_spike():
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
     red_agent = MagicMock(spec=Agent)
     red_agent.executor = MagicMock()
     red_agent.executor.jump_host = "192.168.64.11"
-    blue_agent = MagicMock(spec=Agent)
-    blue_agent.executor = MagicMock()
+    blue_agent = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
     blue_agent.executor.control_source_ip = "192.168.64.1"
     orch = Orchestrator(red_agent, blue_agent)
     orch.state.history = [{
@@ -354,18 +356,13 @@ def test_blue_guidance_contains_on_brute_force_spike():
 def test_blue_guidance_defaults_to_logs_heartbeat():
     # Whenever the last blue action was NOT investigate_logs, blue is steered
     # straight back to it — the only reliable flag-read detector.
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {
-            "role": "blue",
-            "tool": {"function": {"name": "investigate_processes", "arguments": {}}},
-            "output": "{}",
-        },
-    ]
+    from src.agents import BlueAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    blue.history = [Turn(0, "", {"function": {"name": "investigate_processes", "arguments": {}}}, "{}")]
 
-    summary = orch._build_state_summary("blue")
+    summary = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
 
     assert "Blue guidance:" in summary
     assert "Call `investigate_logs` now" in summary
@@ -375,14 +372,13 @@ def test_blue_guidance_defaults_to_logs_heartbeat():
 
 def test_blue_guidance_covers_breadth_right_after_a_logs_check():
     # Right after a logs check, spend one turn on breadth, then return to logs.
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {"role": "blue", "tool": {"function": {"name": "investigate_logs", "arguments": {}}}, "output": "{}"},
-    ]
+    from src.agents import BlueAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    blue.history = [Turn(0, "", {"function": {"name": "investigate_logs", "arguments": {}}}, "{}")]
 
-    summary = orch._build_state_summary("blue")
+    summary = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
 
     # investigate_logs was last; steer to the top unused breadth tool
     # (investigate_connections — blue's network-recon visibility) and promise a
@@ -394,11 +390,12 @@ def test_blue_guidance_covers_breadth_right_after_a_logs_check():
 def test_blue_guidance_returns_to_logs_after_full_sweep():
     # Even after every tool has run once, a non-logs last action sends blue back
     # to the logs heartbeat rather than stopping.
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {"role": "blue", "tool": {"function": {"name": name, "arguments": {}}}, "output": "{}"}
+    from src.agents import BlueAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    blue.history = [
+        Turn(0, "", {"function": {"name": name, "arguments": {}}}, "{}")
         for name in (
             "investigate_logs",
             "investigate_file_access",
@@ -409,7 +406,7 @@ def test_blue_guidance_returns_to_logs_after_full_sweep():
         )
     ]
 
-    summary = orch._build_state_summary("blue")
+    summary = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
 
     assert "Call `investigate_logs` now" in summary
     assert "Do NOT declare the system clean" in summary
@@ -516,13 +513,12 @@ def test_observe_mode_holds_containment_no_real_drop():
     mock_executor.contain_attacker.assert_not_called()
 
 def test_observe_mode_suppresses_containment_order():
-    orch = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), observe=True)
-    orch._blue_confirmed_attackers = lambda: ["192.168.64.11"]
-    assert "CONTAIN" not in orch._blue_tool_guidance()
-
-    aggressive = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
-    aggressive._blue_confirmed_attackers = lambda: ["192.168.64.11"]
-    assert "CONTAIN" in aggressive._blue_tool_guidance()  # default still orders it
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    # Observe mode holds the order; aggressive mode still issues it.
+    assert "CONTAIN" not in blue.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "CONTAIN" in blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
 
 
 # --- Task 4: red phase logic self-contained in RedAgent -------------------
@@ -585,3 +581,21 @@ def test_redagent_flag_read_on_confirmed_root():
     assert "Red Phase: flag_read" in g
     assert "sudo cat /root/flag.txt" in g
     assert "passwordless root" in g
+
+
+# --- Task 5: blue tool-steering self-contained in BlueAgent ---------------
+
+def test_blueagent_tool_guidance_defaults_to_logs_heartbeat():
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    g = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
+    assert "investigate_logs" in g
+
+
+def test_blueagent_contain_order_on_confirmed_attacker():
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "contain_attacker" in g and "192.168.64.11" in g

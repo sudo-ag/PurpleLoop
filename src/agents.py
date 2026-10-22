@@ -528,6 +528,10 @@ class Agent:
         is a safe no-op so the orchestrator can call it without a type check."""
         return ""
 
+    def tool_guidance(self, observe: bool, confirmed_attackers: "List[str]", contained: bool) -> str:
+        """Per-turn tool-steering. Blue overrides; base is a safe no-op."""
+        return ""
+
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
         Processes the current state and returns either a tool call or a text response.
@@ -831,8 +835,71 @@ class RedAgent(Agent):
         return guidance
 
 
+BLUE_TOOL_PRIORITY = [
+    "investigate_logs",
+    "investigate_connections",
+    "investigate_file_access",
+    "investigate_processes",
+    "investigate_users",
+    "investigate_cron",
+    "investigate_network",
+]
+
+
 class BlueAgent(Agent):
-    """Blue defender with its role fixed. Behavior identical to Agent(role='blue')."""
+    """Blue defender with its role fixed, and its own tool-steering — the
+    log-heartbeat + least-recently-used breadth rotation + contain order,
+    computed from its OWN history. Game facts (observe mode, confirmed
+    attackers, whether already contained) are passed in by the caller."""
 
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="blue", executor=executor, model=model, **kw)
+
+    def _tools_used(self) -> List[str]:
+        used = []
+        for t in self.history:
+            if isinstance(t.action, dict):
+                name = t.action.get("function", {}).get("name", "")
+                if name:
+                    used.append(name)
+        return used
+
+    def tool_guidance(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
+        # With EVIDENCE of malice from an attacker IP (scan / brute-force /
+        # confirmed breach), give a direct containment order — the model otherwise
+        # narrates the finding instead of acting. Held in observe mode by the game.
+        if not observe and not contained and confirmed_attackers:
+            ip = confirmed_attackers[0]
+            return (
+                f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
+                f"scan, brute-force, or confirmed access — not just a connection). "
+                f"Stop investigating and CONTAIN it now: call `contain_attacker` with "
+                f"ip=\"{ip}\". Containing the attacker before it reaches its objective "
+                f"wins the engagement. Do this before any other tool."
+            )
+
+        used = self._tools_used()
+        last = used[-1] if used else None
+        guidance = "You are the blue defender."
+        if last != "investigate_logs":
+            guidance += (
+                " Call `investigate_logs` now. It is the only tool that reliably reveals a "
+                "flag read, the read can happen on ANY turn, so you re-run it almost every "
+                "turn as your primary check. Do NOT declare the system clean or write a "
+                "report off a quiet earlier sweep — a breach can occur after you looked. "
+                "Only write the incident report once a tool returns a BREACH / "
+                "flag_access_detected."
+            )
+        else:
+            # Just checked logs — cover the least-recently-used breadth tool so
+            # blue keeps rotating instead of sticking on one once all were tried.
+            breadth = [t for t in BLUE_TOOL_PRIORITY if t != "investigate_logs"]
+            last_use = {t: i for i, t in enumerate(used)}
+            next_breadth = min(breadth, key=lambda t: last_use.get(t, -1))
+            guidance += (
+                f" You just checked the logs. Use this turn for breadth — call `{next_breadth}` "
+                f"— then go back to `investigate_logs` next turn to stay on watch."
+            )
+        if used:
+            guidance += f" Already run: {', '.join(dict.fromkeys(used))}."
+        return f"Blue guidance: {guidance}"

@@ -71,16 +71,6 @@ def dedupe_lessons(lessons: List[str],
 # (evidence of malice), not just connecting.
 _BRUTE_FORCE_THRESHOLD = 5
 
-_BLUE_TOOL_PRIORITY = [
-    "investigate_logs",
-    "investigate_connections",
-    "investigate_file_access",
-    "investigate_processes",
-    "investigate_users",
-    "investigate_cron",
-    "investigate_network",
-]
-
 # Graded objective tiers (realistic rubric). Red climbs these; blue defends each
 # with a matching sensor. T2 (data/credential exfil) is declared but INERT until
 # the web/DB exfil sensor lands — nothing records its slots yet.
@@ -361,16 +351,6 @@ class Orchestrator:
         arguments = function.get("arguments", {})
         return json.dumps({"name": name, "arguments": arguments}, sort_keys=True)
 
-    def _blue_tools_used(self) -> List[str]:
-        used = []
-        for entry in self.state.history:
-            if entry.get("role") != "blue" or "tool" not in entry:
-                continue
-            name = entry.get("tool", {}).get("function", {}).get("name", "")
-            if name:
-                used.append(name)
-        return used
-
     def _blue_confirmed_attackers(self) -> List[str]:
         """Attacker IPs blue has EVIDENCE OF MALICE for in its own tool output —
         a port scan, a brute-force spike, or a confirmed flag access — not merely
@@ -406,56 +386,6 @@ class Orchestrator:
                 if data.get("flag_access_detected"):
                     add(data.get("suspicious_ips"))                # confirmed breach
         return confirmed
-
-    def _blue_tool_guidance(self) -> str:
-        # Once blue has EVIDENCE of malice from an attacker IP (a scan, a
-        # brute-force, or a confirmed breach), give it a direct containment order —
-        # the model otherwise narrates the finding instead of acting. A bare
-        # foreign connection is NOT enough; blue must catch an actual attack.
-        if not self.observe and self.state.blue_contain_turn is None:
-            attackers = self._blue_confirmed_attackers()
-            if attackers:
-                ip = attackers[0]
-                return (
-                    f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
-                    f"scan, brute-force, or confirmed access — not just a connection). "
-                    f"Stop investigating and CONTAIN it now: call `contain_attacker` with "
-                    f"ip=\"{ip}\". Containing the attacker before it reaches its objective "
-                    f"wins the engagement. Do this before any other tool."
-                )
-
-        used = self._blue_tools_used()
-        last = used[-1] if used else None
-        # `investigate_logs` is the ONLY reliable flag-read detector, and the read
-        # can land on any turn, so it is blue's heartbeat: run it almost every turn.
-        # The only time we steer elsewhere is right after a logs check, to cover one
-        # breadth tool (or confirm via file-access) before returning to logs. This
-        # keeps the reliable detector re-checked within red's breach window instead
-        # of being drowned out by a slow one-pass sweep.
-        guidance = "You are the blue defender."
-        if last != "investigate_logs":
-            guidance += (
-                " Call `investigate_logs` now. It is the only tool that reliably reveals a "
-                "flag read, the read can happen on ANY turn, so you re-run it almost every "
-                "turn as your primary check. Do NOT declare the system clean or write a "
-                "report off a quiet earlier sweep — a breach can occur after you looked. "
-                "Only write the incident report once a tool returns a BREACH / "
-                "flag_access_detected."
-            )
-        else:
-            # Just checked logs — cover one breadth tool this turn. Pick the
-            # least-recently-used breadth tool so blue keeps rotating instead of
-            # sticking on one once every tool has been tried at least once.
-            breadth = [t for t in _BLUE_TOOL_PRIORITY if t != "investigate_logs"]
-            last_use = {t: i for i, t in enumerate(used)}  # most recent index wins
-            next_breadth = min(breadth, key=lambda t: last_use.get(t, -1))
-            guidance += (
-                f" You just checked the logs. Use this turn for breadth — call `{next_breadth}` "
-                f"— then go back to `investigate_logs` next turn to stay on watch."
-            )
-        if used:
-            guidance += f" Already run: {', '.join(dict.fromkeys(used))}."
-        return f"Blue guidance: {guidance}"
 
     def _repeat_nudge(self, role: str) -> str:
         """Nudge an agent that spent its whole last turn re-issuing tool calls it
@@ -507,7 +437,7 @@ class Orchestrator:
                     f"user={cred['user']} password={cred['pwd']}"
                 )
         elif role == "blue":
-            state_summary += f"\n{self._blue_tool_guidance()}"
+            state_summary += f"\n{self.blue_agent.tool_guidance(observe=self.observe, confirmed_attackers=self._blue_confirmed_attackers(), contained=self.state.blue_contain_turn is not None)}"
         state_summary += self._repeat_nudge(role)
         return state_summary
 
