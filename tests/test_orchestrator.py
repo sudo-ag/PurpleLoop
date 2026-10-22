@@ -309,48 +309,33 @@ def test_red_text_response_retries_for_tool_call():
 
 def test_blue_guidance_orders_containment_only_with_malice_evidence():
     from src.agents import BlueAgent
+    from src.trajectory import Turn
     from src.mock_executor import MockExecutor
-    red_agent = MagicMock(spec=Agent)
-    red_agent.executor = MagicMock()
-    red_agent.executor.jump_host = "192.168.64.11"
-    blue_agent = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
-    blue_agent.executor.control_source_ip = "192.168.64.1"
-    orch = Orchestrator(red_agent, blue_agent)
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    blue.executor.control_source_ip = "192.168.64.1"
 
     # A bare foreign connection (no scan) must NOT trigger a containment order.
-    orch.state.history = [{
-        "role": "blue",
-        "tool": {"function": {"name": "investigate_connections", "arguments": {}}},
-        "output": '{"tool": "investigate_connections", "foreign_ips": ["192.168.64.11"], "suspicious_ips": [], "port_scanners": []}',
-    }]
-    assert "contain_attacker" not in orch._build_state_summary("blue")
+    blue.history = [Turn(0, "", {"function": {"name": "investigate_connections", "arguments": {}}},
+        '{"tool": "investigate_connections", "foreign_ips": ["192.168.64.11"], "suspicious_ips": [], "port_scanners": []}')]
+    assert "contain_attacker" not in blue.build_observation()
 
     # A port scan IS evidence of malice → blue is ordered to contain it.
-    orch.state.history.append({
-        "role": "blue",
-        "tool": {"function": {"name": "investigate_connections", "arguments": {}}},
-        "output": '{"tool": "investigate_connections", "port_scanners": ["192.168.64.11"], "suspicious_ips": ["192.168.64.11"]}',
-    })
-    summary = orch._build_state_summary("blue")
+    blue.history.append(Turn(1, "", {"function": {"name": "investigate_connections", "arguments": {}}},
+        '{"tool": "investigate_connections", "port_scanners": ["192.168.64.11"], "suspicious_ips": ["192.168.64.11"]}'))
+    summary = blue.build_observation()
     assert "contain_attacker" in summary
     assert "192.168.64.11" in summary
 
 
 def test_blue_guidance_contains_on_brute_force_spike():
     from src.agents import BlueAgent
+    from src.trajectory import Turn
     from src.mock_executor import MockExecutor
-    red_agent = MagicMock(spec=Agent)
-    red_agent.executor = MagicMock()
-    red_agent.executor.jump_host = "192.168.64.11"
-    blue_agent = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
-    blue_agent.executor.control_source_ip = "192.168.64.1"
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [{
-        "role": "blue",
-        "tool": {"function": {"name": "investigate_logs", "arguments": {}}},
-        "output": '{"tool": "investigate_logs", "failed_attempts": 12, "suspicious_ips": ["192.168.64.11"]}',
-    }]
-    assert "contain_attacker" in orch._build_state_summary("blue")
+    blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
+    blue.executor.control_source_ip = "192.168.64.1"
+    blue.history = [Turn(0, "", {"function": {"name": "investigate_logs", "arguments": {}}},
+        '{"tool": "investigate_logs", "failed_attempts": 12, "suspicious_ips": ["192.168.64.11"]}')]
+    assert "contain_attacker" in blue.build_observation()
 
 
 def test_blue_guidance_defaults_to_logs_heartbeat():

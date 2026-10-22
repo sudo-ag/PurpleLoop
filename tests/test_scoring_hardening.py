@@ -15,14 +15,6 @@ def _orch(**kw) -> Orchestrator:
     return Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent), **kw)
 
 
-def _real_orch(**kw) -> Orchestrator:
-    # Real agents so _build_state_summary (which calls agent self-steering) yields
-    # a real string rather than a MagicMock.
-    from src.agents import RedAgent, BlueAgent
-    from src.mock_executor import MockExecutor
-    return Orchestrator(RedAgent(executor=MockExecutor()), BlueAgent(executor=MockExecutor()), **kw)
-
-
 # --- F4: error-output classification ---------------------------------------
 
 def test_mixed_output_with_some_error_lines_is_still_useful():
@@ -101,44 +93,50 @@ def test_generate_report_surfaces_graded_verdict_and_tier_board():
     assert "T1 foothold" in r and "T3 root" in r
 
 
-# --- earned credential is persisted and resurfaced to red (sudo -S fix) -----
+# --- earned credential is captured and resurfaced by RedAgent (sudo -S fix) --
 
-def _usecred(user, pw, status="success"):
-    tool = {"function": {"name": "use_credential",
-                         "arguments": {"username": user, "password": pw}}}
+def _red_with_usecred(user, pw, status="success"):
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor())
+    call = {"function": {"name": "use_credential", "arguments": {"username": user, "password": pw}}}
     out = f'{{"tool": "use_credential", "status": "{status}", "user": "{user}"}}'
-    return tool, out
+    red.history = [Turn(0, "", call, out)]
+    red._refresh_foothold()
+    return red
 
 
 def test_successful_use_credential_is_captured():
-    o = _orch()
-    tool, out = _usecred("lando_calrissian", "@dm1n1str8r")
-    o._capture_foothold_cred(tool, out)
-    assert o.state.red_foothold_cred == {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
+    red = _red_with_usecred("lando_calrissian", "@dm1n1str8r")
+    assert red.foothold_cred == {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
 
 
 def test_failed_use_credential_is_not_captured():
-    o = _orch()
-    tool, out = _usecred("lando_calrissian", "wrong", status="failed")
-    o._capture_foothold_cred(tool, out)
-    assert o.state.red_foothold_cred is None
+    red = _red_with_usecred("lando_calrissian", "wrong", status="failed")
+    assert red.foothold_cred is None
 
 
 def test_non_usecredential_tool_does_not_capture():
-    o = _orch()
-    tool = {"function": {"name": "execute_command", "arguments": {"command": "id"}}}
-    o._capture_foothold_cred(tool, "uid=1120(lando)")
-    assert o.state.red_foothold_cred is None
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor())
+    red.history = [Turn(0, "", {"function": {"name": "execute_command", "arguments": {"command": "id"}}}, "uid=1120(lando)")]
+    red._refresh_foothold()
+    assert red.foothold_cred is None
 
 
 def test_red_summary_resurfaces_cred_blue_never_sees_it():
-    o = _real_orch()
-    o.state.red_foothold_cred = {"user": "lando_calrissian", "pwd": "@dm1n1str8r"}
-    red_summary = o._build_state_summary("red")
-    assert "@dm1n1str8r" in red_summary and "sudo -S" in red_summary
-    assert "@dm1n1str8r" not in o._build_state_summary("blue")
+    from src.agents import BlueAgent
+    from src.mock_executor import MockExecutor
+    red = _red_with_usecred("lando_calrissian", "@dm1n1str8r")
+    obs = red.build_observation()
+    assert "@dm1n1str8r" in obs and "sudo -S" in obs
+    assert "@dm1n1str8r" not in BlueAgent(executor=MockExecutor()).build_observation()
 
 
 def test_red_summary_has_no_cred_line_before_foothold():
-    o = _real_orch()
-    assert "FOOTHOLD CREDENTIAL" not in o._build_state_summary("red")
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    assert "FOOTHOLD CREDENTIAL" not in RedAgent(executor=MockExecutor()).build_observation()

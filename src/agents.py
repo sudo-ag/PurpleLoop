@@ -566,6 +566,26 @@ class Agent:
             "try a genuinely different approach."
         )
 
+    def _own_tail(self) -> List[Dict[str, Any]]:
+        """The agent's own recent turns, rendered for the observation."""
+        return [{"action": t.action, "output": t.output} for t in self.history[-5:]]
+
+    def _role_guidance(self) -> str:
+        """Role-specific self-steering appended to the observation. Overridden."""
+        return ""
+
+    def build_observation(self) -> str:
+        """Assemble what this agent sees THIS turn — from its own state only."""
+        obs = f"Turn {len(self.history)}. Current Role: {self.role}. History: {self._own_tail()}"
+        obs += f"\n{self._role_guidance()}"
+        obs += self.repeat_nudge()
+        return obs
+
+    def decide(self) -> Union[Dict[str, Any], str]:
+        """One turn: build own observation, self-steer, act. The standalone loop
+        and the arena both call this; neither feeds the agent a state summary."""
+        return self.act(self.build_observation())
+
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
         Processes the current state and returns either a tool call or a text response.
@@ -786,6 +806,37 @@ class RedAgent(Agent):
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="red", executor=executor, model=model, **kw)
         self.phase = "initial_enum"
+        self.foothold_cred: "Optional[Dict[str, str]]" = None
+
+    def _refresh_foothold(self) -> None:
+        """Set has_foothold + remember the earned cred from red's OWN history.
+        A validated use_credential is red's definitive 'I am on the box as a
+        non-root user' signal — the one that drives privilege_check steering."""
+        for t in self._tool_turns():
+            fn = t.action.get("function", {})
+            if fn.get("name") != "use_credential":
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("status") == "success":
+                args = fn.get("arguments", {}) or {}
+                if args.get("username") and args.get("password"):
+                    self.foothold_cred = {"user": args["username"], "pwd": args["password"]}
+                    self.has_foothold = True
+
+    def _role_guidance(self) -> str:
+        self._refresh_foothold()
+        g = self.phase_guidance()
+        if self.foothold_cred:
+            c = self.foothold_cred
+            g += (
+                f"\nYOUR FOOTHOLD CREDENTIAL (you cracked this earlier; reuse this "
+                f"EXACT password for `sudo -S`, never guess): "
+                f"user={c['user']} password={c['pwd']}"
+            )
+        return g
 
     @property
     def flag_path(self) -> str:
@@ -869,6 +920,8 @@ class RedAgent(Agent):
         return guidance
 
 
+BLUE_BRUTE_FORCE_THRESHOLD = 5   # failed SSH auths in-window that mark brute-forcing
+
 BLUE_TOOL_PRIORITY = [
     "investigate_logs",
     "investigate_connections",
@@ -888,6 +941,56 @@ class BlueAgent(Agent):
 
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="blue", executor=executor, model=model, **kw)
+
+    def confirmed_attackers(self) -> List[str]:
+        """Attacker IPs blue has EVIDENCE OF MALICE for in its OWN tool output —
+        a port scan, brute-force spike, or confirmed flag access. Excludes blue's
+        own control IP. A bare foreign connection is not enough."""
+        own = getattr(self.executor, "control_source_ip", None)
+        confirmed: List[str] = []
+
+        def add(ips):
+            for ip in ips or []:
+                if ip and ip != own and ip not in confirmed:
+                    confirmed.append(ip)
+
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            tool = data.get("tool")
+            if tool == "investigate_connections":
+                add(data.get("port_scanners"))
+            elif tool == "investigate_logs":
+                if (data.get("failed_attempts") or 0) >= BLUE_BRUTE_FORCE_THRESHOLD:
+                    add(data.get("suspicious_ips"))
+                if data.get("flag_access_detected"):
+                    add(data.get("suspicious_ips"))
+        return confirmed
+
+    def _has_contained(self) -> bool:
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("tool") == "contain_attacker" and data.get("contained"):
+                return True
+        return False
+
+    def _role_guidance(self) -> str:
+        return self.tool_guidance(
+            observe=self.observe,
+            confirmed_attackers=self.confirmed_attackers(),
+            contained=self._has_contained(),
+        )
 
     def _tools_used(self) -> List[str]:
         used = []
