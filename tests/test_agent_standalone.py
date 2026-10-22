@@ -16,3 +16,10 @@ def test_red_blue_agents_are_agents_with_fixed_roles():
     red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
     blue = BlueAgent(executor=MockExecutor(), model="llama3.2:latest")
     assert red.role == "red" and blue.role == "blue"
+
+
+def test_agent_records_its_own_turns():
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.record_turn(observation="obs", action=[{"x": 1}], output="out")
+    assert len(red.history) == 1
+    assert red.history[0].observation == "obs"

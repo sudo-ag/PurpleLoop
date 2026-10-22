@@ -2,6 +2,7 @@ import ollama
 from ollama import Client
 from typing import Union, Dict, Any, List, Optional
 from src.executor import ToolExecutor
+from src.trajectory import Turn
 import json
 
 
@@ -320,6 +321,9 @@ class Agent:
         self.model = model
         self.experience = experience or []
         self.target = target
+        # The agent's OWN turn stream (its tool calls + outputs), independent of
+        # the shared sim history. This is what a decoupled agent steers from.
+        self.history: List[Turn] = []
         # Red's attacker box (Kali) channel, for recon/credential attacks run
         # from red's own machine against the target. Only meaningful for red.
         self.attacker_executor = attacker_executor if role.lower() == "red" else None
@@ -509,6 +513,10 @@ class Agent:
                         },
                     },
                 })
+
+    def record_turn(self, observation: str, action: Any, output: str) -> None:
+        """Append one turn to the agent's own history stream."""
+        self.history.append(Turn(n=len(self.history), observation=observation, action=action, output=output))
 
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
