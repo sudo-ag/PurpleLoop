@@ -525,6 +525,12 @@ class Agent:
                     },
                 })
 
+    def reset_episode(self) -> None:
+        """Clear per-episode state so a reused agent starts each episode fresh.
+        Knowledge (self.experience) PERSISTS — that is what compounds."""
+        self.history = []
+        self.has_foothold = False
+
     def record_turn(self, observation: str, action: Any, output: str) -> None:
         """Append one turn to the agent's own history stream."""
         self.history.append(Turn(n=len(self.history), observation=observation, action=action, output=output))
@@ -849,6 +855,11 @@ class RedAgent(Agent):
         super().__init__(role="red", executor=executor, model=model, **kw)
         self.phase = "initial_enum"
         self.foothold_cred: "Optional[Dict[str, str]]" = None
+
+    def reset_episode(self) -> None:
+        super().reset_episode()
+        self.phase = "initial_enum"
+        self.foothold_cred = None
 
     def _refresh_foothold(self) -> None:
         """Set has_foothold + remember the earned cred from red's OWN history.

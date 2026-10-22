@@ -662,6 +662,12 @@ class Orchestrator:
         """
         Runs the simulation until a victory condition is met or max_turns is reached.
         """
+        # 0. Fresh per-episode agent state (history/foothold/phase). Agents are
+        # reused across episodes so their knowledge compounds, but their
+        # per-episode state must reset or red skips re-earning its foothold.
+        self.red_agent.reset_episode()
+        self.blue_agent.reset_episode()
+
         # 1. Establish connections (best-effort; a stateless executor can skip
         # this). Red and blue may share one executor (mock / single box) or be two
         # (red via the jump host, blue direct); connect each distinct one.

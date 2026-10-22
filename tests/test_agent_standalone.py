@@ -57,3 +57,19 @@ def test_reflect_persists_lesson(tmp_path, monkeypatch):
     monkeypatch.setattr(red, "summarize_experience", lambda hist, outcome=None: "use --random-agent")
     red.reflect("neutral")
     assert "use --random-agent" in json.loads(kp.read_text())["red"]
+
+
+def test_reset_episode_clears_per_episode_state_keeps_knowledge():
+    from src.trajectory import Turn
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.experience = ["lesson A"]
+    red.history = [Turn(0, "", {"function": {"name": "x", "arguments": {}}}, "y")]
+    red.foothold_cred = {"user": "lando", "pwd": "x"}
+    red.has_foothold = True
+    red.phase = "flag_read"
+    red.reset_episode()
+    assert red.history == []
+    assert red.foothold_cred is None
+    assert red.has_foothold is False
+    assert red.phase == "initial_enum"
+    assert red.experience == ["lesson A"]   # knowledge survives the reset
