@@ -307,98 +307,6 @@ def test_red_text_response_retries_for_tool_call():
     assert len(red_tool_calls) == 1
     red_agent.process_tool_call.assert_called_once_with(tool_call)
 
-def test_red_phase_advances_to_flag_discovery_after_basic_enum():
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {
-            "role": "red",
-            "tool": {"function": {"name": "execute_command", "arguments": {"command": "whoami"}}},
-            "output": "vagrant",
-        },
-        {
-            "role": "red",
-            "tool": {"function": {"name": "execute_command", "arguments": {"command": "id"}}},
-            "output": "uid=900(vagrant) gid=900(vagrant) groups=900(vagrant),27(sudo)",
-        },
-    ]
-
-    summary = orch._build_state_summary("red")
-
-    assert "Red Phase: flag_discovery" in summary
-    assert "find / -maxdepth 4 -name flag.txt" in summary
-    assert "Do not repeat whoami/id" in summary
-
-def test_red_phase_unprivileged_foothold_goes_to_privilege_check_not_flag_discovery():
-    # Earned red lands as a non-root user (uid=1120, group users only) and has no
-    # NOPASSWD. It must be steered to ESCALATE, not to hunt an unreadable flag —
-    # otherwise it burns its grace window on a doomed `find flag.txt`.
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.red_tiers[TIER_FOOTHOLD] = 2
-    orch.state.history = [
-        {
-            "role": "red",
-            "tool": {"function": {"name": "execute_command", "arguments": {"command": "id"}}},
-            "output": "uid=1120(lando_calrissian) gid=100(users) groups=100(users)",
-        },
-    ]
-
-    summary = orch._build_state_summary("red")
-
-    assert "Red Phase: privilege_check" in summary
-    assert "ESCALATE" in summary
-    assert "flag_discovery" not in summary
-
-
-def test_red_phase_advances_to_flag_read_after_finding_flag_path():
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {
-            "role": "red",
-            "tool": {
-                "function": {
-                    "name": "execute_command",
-                    "arguments": {"command": "find / -maxdepth 4 -name flag.txt 2>/dev/null"},
-                },
-            },
-            "output": "/root/flag.txt",
-        },
-    ]
-
-    summary = orch._build_state_summary("red")
-
-    assert "Red Phase: flag_read" in summary
-    assert "sudo cat /root/flag.txt" in summary
-    assert "Discovered path(s): /root/flag.txt" in summary
-
-
-def test_red_phase_jumps_to_flag_read_on_confirmed_root():
-    # The exact failure from the live run: red confirmed NOPASSWD root via
-    # sudo -l but find never surfaced a path. It must still move to flag_read
-    # and be told to `sudo cat` the known flag path instead of re-enumerating.
-    red_agent = MagicMock(spec=Agent)
-    blue_agent = MagicMock(spec=Agent)
-    orch = Orchestrator(red_agent, blue_agent)
-    orch.state.history = [
-        {
-            "role": "red",
-            "tool": {"function": {"name": "execute_command", "arguments": {"command": "sudo -n -l"}}},
-            "output": "User vagrant may run the following commands on ubuntu:\n    (ALL : ALL) NOPASSWD: ALL",
-        },
-    ]
-
-    summary = orch._build_state_summary("red")
-
-    assert "Red Phase: flag_read" in summary
-    assert "sudo cat /root/flag.txt" in summary
-    assert "passwordless root" in summary
-
-
 def test_blue_guidance_orders_containment_only_with_malice_evidence():
     red_agent = MagicMock(spec=Agent)
     red_agent.executor = MagicMock()
@@ -615,3 +523,65 @@ def test_observe_mode_suppresses_containment_order():
     aggressive = Orchestrator(MagicMock(spec=Agent), MagicMock(spec=Agent))
     aggressive._blue_confirmed_attackers = lambda: ["192.168.64.11"]
     assert "CONTAIN" in aggressive._blue_tool_guidance()  # default still orders it
+
+
+# --- Task 4: red phase logic self-contained in RedAgent -------------------
+
+def test_redagent_phase_guidance_matches_legacy_flag_discovery():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.history = [
+        Turn(0, "", {"function": {"name": "execute_command", "arguments": {"command": "whoami"}}}, "vagrant"),
+        Turn(1, "", {"function": {"name": "execute_command", "arguments": {"command": "id"}}},
+             "uid=900(vagrant) gid=900(vagrant) groups=900(vagrant),27(sudo)"),
+    ]
+    g = red.phase_guidance()
+    assert "Red Phase: flag_discovery" in g
+    assert "find / -maxdepth 4 -name flag.txt" in g
+
+
+def test_redagent_unprivileged_foothold_goes_to_privilege_check():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.has_foothold = True
+    red.history = [
+        Turn(0, "", {"function": {"name": "execute_command", "arguments": {"command": "id"}}},
+             "uid=1120(lando_calrissian) gid=100(users) groups=100(users)"),
+    ]
+    g = red.phase_guidance()
+    assert "Red Phase: privilege_check" in g
+    assert "ESCALATE" in g
+
+
+def test_redagent_flag_read_after_finding_path():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.history = [
+        Turn(0, "", {"function": {"name": "execute_command",
+             "arguments": {"command": "find / -maxdepth 4 -name flag.txt 2>/dev/null"}}}, "/root/flag.txt"),
+    ]
+    g = red.phase_guidance()
+    assert "Red Phase: flag_read" in g
+    assert "sudo cat /root/flag.txt" in g
+    assert "Discovered path(s): /root/flag.txt" in g
+
+
+def test_redagent_flag_read_on_confirmed_root():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.history = [
+        Turn(0, "", {"function": {"name": "execute_command", "arguments": {"command": "sudo -n -l"}}},
+             "User vagrant may run the following commands on ubuntu:\n    (ALL : ALL) NOPASSWD: ALL"),
+    ]
+    g = red.phase_guidance()
+    assert "Red Phase: flag_read" in g
+    assert "sudo cat /root/flag.txt" in g
+    assert "passwordless root" in g

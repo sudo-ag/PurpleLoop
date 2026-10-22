@@ -4,6 +4,7 @@ from typing import Union, Dict, Any, List, Optional
 from src.executor import ToolExecutor
 from src.trajectory import Turn
 import json
+import re
 
 
 # System Prompts
@@ -324,6 +325,10 @@ class Agent:
         # The agent's OWN turn stream (its tool calls + outputs), independent of
         # the shared sim history. This is what a decoupled agent steers from.
         self.history: List[Turn] = []
+        # Whether red has authenticated a foothold. Set by the game (and later by
+        # red itself); lives on the base so the orchestrator's red-branch call is
+        # safe for any agent instance.
+        self.has_foothold: bool = False
         # Red's attacker box (Kali) channel, for recon/credential attacks run
         # from red's own machine against the target. Only meaningful for red.
         self.attacker_executor = attacker_executor if role.lower() == "red" else None
@@ -518,6 +523,11 @@ class Agent:
         """Append one turn to the agent's own history stream."""
         self.history.append(Turn(n=len(self.history), observation=observation, action=action, output=output))
 
+    def phase_guidance(self) -> str:
+        """Per-turn self-steering. Red overrides with its phase machine; the base
+        is a safe no-op so the orchestrator can call it without a type check."""
+        return ""
+
     def act(self, state: str) -> Union[Dict[str, Any], str]:
         """
         Processes the current state and returns either a tool call or a text response.
@@ -711,11 +721,114 @@ class Agent:
             return None
 
 
+RED_PHASE_GUIDANCE = {
+    "initial_enum": (
+        "Next objective: establish context with one compact enum command, then move on. "
+        "Good choices: `whoami; id; uname -a; hostname; pwd`."
+    ),
+    "flag_discovery": (
+        "Next objective: locate flag.txt. Use `find / -maxdepth 4 -name flag.txt "
+        "-print 2>/dev/null` or check common dirs. Do not repeat whoami/id."
+    ),
+    "privilege_check": (
+        "Next objective: you have a FOOTHOLD but are NOT root — ESCALATE before "
+        "chasing the flag (you cannot read it as this user). Check your groups "
+        "(`id`): if you are in the `docker` group that is a one-shot root win — "
+        "`docker run -v /:/mnt --rm alpine cat /mnt/root/flag.txt` (no `-it` over "
+        "SSH). Otherwise try `sudo -n -l`, SUID binaries "
+        "(`find / -perm -4000 2>/dev/null`), and writable cron."
+    ),
+}
+
+
 class RedAgent(Agent):
-    """Red operator with its role fixed. Behavior identical to Agent(role='red')."""
+    """Red operator with its role fixed, and its own phase self-steering —
+    computed from its OWN history, no orchestrator needed."""
 
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="red", executor=executor, model=model, **kw)
+        self.phase = "initial_enum"
+
+    @property
+    def flag_path(self) -> str:
+        return getattr(self.target, "flag_path", None) or "/root/flag.txt"
+
+    def _tool_turns(self) -> List[Turn]:
+        return [t for t in self.history if isinstance(t.action, dict)]
+
+    def _commands(self) -> List[str]:
+        cmds = []
+        for t in self._tool_turns():
+            command = t.action.get("function", {}).get("arguments", {}).get("command")
+            if isinstance(command, str):
+                cmds.append(command)
+        return cmds
+
+    def discovered_flag_paths(self) -> List[str]:
+        paths: List[str] = []
+        seen = set()
+        for t in self._tool_turns():
+            command = t.action.get("function", {}).get("arguments", {}).get("command")
+            command = command if isinstance(command, str) else ""
+            for text in (command, str(t.output)):
+                for path in re.findall(r"/[A-Za-z0-9_./-]*flag\.txt", text):
+                    if path not in seen:
+                        paths.append(path)
+                        seen.add(path)
+        return paths
+
+    def root_available(self) -> bool:
+        """True once red has confirmed a passwordless-root path from sudo -l."""
+        for t in self._tool_turns():
+            output = str(t.output).lower()
+            if "nopasswd" in output or "(all" in output:
+                return True
+        return False
+
+    def _update_phase(self) -> None:
+        commands = self._commands()
+        outputs = [str(t.output) for t in self._tool_turns()]
+        combined = "\n".join(commands + outputs).lower()
+        if self.discovered_flag_paths() or self.root_available():
+            self.phase = "flag_read"
+            return
+        # Earned, unprivileged foothold: escalate BEFORE hunting the flag.
+        if self.has_foothold and not self.root_available():
+            self.phase = "privilege_check"
+            return
+        if "permission denied" in combined or "sudo -l" in combined or "sudo -n -l" in combined:
+            self.phase = "privilege_check"
+            return
+        if any("find" in c.lower() and "flag.txt" in c.lower() for c in commands):
+            self.phase = "privilege_check"
+            return
+        if len(commands) >= 2 or any("uid=" in o.lower() for o in outputs):
+            self.phase = "flag_discovery"
+            return
+        self.phase = "initial_enum"
+
+    def phase_guidance(self) -> str:
+        self._update_phase()
+        if self.phase == "flag_read":
+            return f"Red Phase: {self.phase}. {self._flag_read_guidance()}"
+        return f"Red Phase: {self.phase}. {RED_PHASE_GUIDANCE[self.phase]}"
+
+    def _flag_read_guidance(self) -> str:
+        paths = self.discovered_flag_paths()
+        target = paths[0] if paths else self.flag_path
+        if self.root_available():
+            guidance = (
+                f"Next objective: you have confirmed passwordless root. READ THE FLAG "
+                f"NOW with `sudo cat {target}`. Stop enumerating — one command wins."
+            )
+        else:
+            guidance = (
+                f"Next objective: read the flag at {target}. Try `cat {target}`; if "
+                f"permission denied, try `sudo cat {target}`."
+            )
+        if paths:
+            guidance += f" Discovered path(s): {', '.join(paths)}."
+        return guidance
 
 
 class BlueAgent(Agent):
