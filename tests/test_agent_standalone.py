@@ -119,3 +119,17 @@ def test_run_records_dict_shaped_turns_its_brain_can_read(monkeypatch):
     traj = red.run(max_turns=1)
     assert red._tool_turns(), "run() must record dict-shaped tool turns the brain can read"
     assert traj.turns and isinstance(traj.turns[-1].action, dict)
+
+
+def test_objective_met_is_case_insensitive():
+    from src.trajectory import Turn
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red.history = [Turn(0, "", {"function": {"name": "x", "arguments": {}}}, "flag{lowercase_read}")]
+    assert red.objective_met() is True   # matches orchestrator's case-insensitive check
+
+
+def test_reset_episode_clears_last_observation():
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    red._last_observation = "stale from last episode"
+    red.reset_episode()
+    assert red._last_observation == ""

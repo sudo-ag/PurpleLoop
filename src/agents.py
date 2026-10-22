@@ -530,6 +530,7 @@ class Agent:
         Knowledge (self.experience) PERSISTS — that is what compounds."""
         self.history = []
         self.has_foothold = False
+        self._last_observation = ""
 
     def record_turn(self, observation: str, action: Any, output: str) -> None:
         """Append one turn to the agent's own history stream."""
@@ -897,8 +898,9 @@ class RedAgent(Agent):
         self.foothold_cred = None
 
     def objective_met(self) -> bool:
-        """Red's campaign is done once it has read the flag (root)."""
-        return any("FLAG{" in str(t.output) for t in self.history)
+        """Red's campaign is done once it has read the flag (root). Case-insensitive,
+        matching the orchestrator's victory check."""
+        return any("flag{" in str(t.output).lower() for t in self.history)
 
     def _refresh_foothold(self) -> None:
         """Set has_foothold + remember the earned cred from red's OWN history.
