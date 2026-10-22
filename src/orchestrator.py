@@ -130,22 +130,6 @@ class Orchestrator:
             except Exception:
                 pass # Don't let dashboard failures stop simulation
 
-    def _load_knowledge(self) -> Dict[str, List[str]]:
-        if not os.path.exists(self.knowledge_file):
-            return {"red": [], "blue": []}
-        try:
-            with open(self.knowledge_file, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {"red": [], "blue": []}
-
-    def _save_knowledge(self, knowledge: Dict[str, List[str]]):
-        try:
-            with open(self.knowledge_file, "w") as f:
-                json.dump(knowledge, f, indent=4)
-        except Exception as e:
-            print(f"Error saving knowledge: {e}")
-
     def get_current_agent(self) -> Agent:
 
         return self.red_agent if self.state.current_agent_role == "red" else self.blue_agent
@@ -710,12 +694,8 @@ class Orchestrator:
             except Exception as e:
                 print(f"Could not arm connection logging (continuing): {e}")
 
-        # 2. Load long-term knowledge, compacting accumulated near-duplicates.
-        knowledge = self._load_knowledge()
-        knowledge["red"] = dedupe_lessons(knowledge.get("red", []))
-        knowledge["blue"] = dedupe_lessons(knowledge.get("blue", []))
-        self.red_agent.experience = knowledge["red"]
-        self.blue_agent.experience = knowledge["blue"]
+        # 2. Knowledge is owned by the agents: they loaded (and compacted) their
+        # own lessons at construction and persist via reflect() below.
 
         try:
             for _ in range(max_turns):
@@ -735,22 +715,15 @@ class Orchestrator:
                     except Exception as e:
                         print(f"Warning: executor disconnect failed: {e}")
 
-        # 4. Learn from the battle
+        # 4. Learn from the battle — each agent reflects on its OWN episode and
+        # persists its own lessons (the agent owns its knowledge).
         print("\nSimulation ended. Agents are now reflecting on the battle...")
-        red_history = [h for h in self.state.history if h.get("role") == "red"]
-        blue_history = [h for h in self.state.history if h.get("role") == "blue"]
-        red_lesson = self.red_agent.summarize_experience(red_history, self._outcome_brief("red"))
-        blue_lesson = self.blue_agent.summarize_experience(blue_history, self._outcome_brief("blue"))
-
+        red_lesson = self.red_agent.reflect(self._outcome_brief("red"))
+        blue_lesson = self.blue_agent.reflect(self._outcome_brief("blue"))
         if red_lesson:
-            knowledge["red"] = merge_lesson(knowledge["red"], red_lesson)
             print(f"Red learned: {red_lesson}")
         if blue_lesson:
-            knowledge["blue"] = merge_lesson(knowledge["blue"], blue_lesson)
             print(f"Blue learned: {blue_lesson}")
-
-        # 5. Save updated knowledge
-        self._save_knowledge(knowledge)
 
         # Horizon reached without an in-loop decision. Blue takes precedence
         # (an in-time detection already set blue_victory); otherwise red wins if

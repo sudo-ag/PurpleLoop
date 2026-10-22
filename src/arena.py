@@ -237,11 +237,12 @@ def build_agents(
                 attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
         else:
             red_ex = blue_ex
+    kp = REPO / "knowledge.json"
     red = RedAgent(
         executor=red_ex, model=model,
-        evade=evade, earned=earned, attacker_executor=attacker_ex,
+        evade=evade, earned=earned, attacker_executor=attacker_ex, knowledge_path=kp,
     )
-    blue = BlueAgent(executor=blue_ex, model=model, observe=observe)
+    blue = BlueAgent(executor=blue_ex, model=model, observe=observe, knowledge_path=kp)
     return red, blue
 
 

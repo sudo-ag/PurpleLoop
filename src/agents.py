@@ -3,6 +3,7 @@ from ollama import Client
 from typing import Union, Dict, Any, List, Optional
 from src.executor import ToolExecutor
 from src.trajectory import Turn
+from pathlib import Path
 import json
 import re
 
@@ -316,11 +317,16 @@ def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
 
 
 class Agent:
-    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None):
+    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None, knowledge_path: "Optional[Any]" = None):
         self.role = role
         self.executor = executor
         self.model = model
         self.experience = experience or []
+        # The agent owns its lessons: load this role's from the shared knowledge
+        # file (if any), compounding across episodes and persisted by reflect().
+        self.knowledge_path = Path(knowledge_path) if knowledge_path else None
+        if self.knowledge_path:
+            self._load_knowledge()
         self.target = target
         # The agent's OWN turn stream (its tool calls + outputs), independent of
         # the shared sim history. This is what a decoupled agent steers from.
@@ -522,6 +528,42 @@ class Agent:
     def record_turn(self, observation: str, action: Any, output: str) -> None:
         """Append one turn to the agent's own history stream."""
         self.history.append(Turn(n=len(self.history), observation=observation, action=action, output=output))
+
+    def _load_knowledge(self) -> None:
+        """Load this role's lessons from the shared knowledge file; empty on any
+        failure (missing / corrupt), never crashing."""
+        from src.orchestrator import dedupe_lessons  # deferred: avoid import cycle
+        try:
+            data = json.loads(self.knowledge_path.read_text())
+            self.experience = dedupe_lessons(data.get(self.role, []))
+        except Exception:
+            self.experience = []
+
+    def _save_knowledge(self) -> None:
+        if not self.knowledge_path:
+            return
+        try:
+            data = json.loads(self.knowledge_path.read_text()) if self.knowledge_path.exists() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[self.role] = self.experience
+        try:
+            self.knowledge_path.write_text(json.dumps(data, indent=4))
+        except Exception as e:
+            print(f"Error saving knowledge: {e}")
+
+    def reflect(self, outcome: Optional[str] = None) -> Optional[str]:
+        """Draw one lesson from this agent's own episode and fold it into (and
+        persist) its knowledge. The agent owns its learning."""
+        from src.orchestrator import merge_lesson  # deferred: avoid import cycle
+        hist = [{"role": self.role, "tool": t.action, "output": t.output} for t in self.history]
+        lesson = self.summarize_experience(hist, outcome)
+        if lesson:
+            self.experience = merge_lesson(self.experience, lesson)
+            self._save_knowledge()
+        return lesson
 
     def phase_guidance(self) -> str:
         """Per-turn self-steering. Red overrides with its phase machine; the base

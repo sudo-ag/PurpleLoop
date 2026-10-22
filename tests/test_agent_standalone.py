@@ -42,3 +42,18 @@ def test_red_role_guidance_resurfaces_captured_cred():
     obs = red.build_observation()
     assert "nerf_herder" in obs and "sudo -S" in obs
     assert red.has_foothold is True
+
+
+def test_agent_loads_empty_lessons_when_file_missing(tmp_path):
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest",
+                   knowledge_path=tmp_path / "nope.json")
+    assert red.experience == []     # no crash, empty lessons
+
+
+def test_reflect_persists_lesson(tmp_path, monkeypatch):
+    import json
+    kp = tmp_path / "k.json"
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest", knowledge_path=kp)
+    monkeypatch.setattr(red, "summarize_experience", lambda hist, outcome=None: "use --random-agent")
+    red.reflect("neutral")
+    assert "use --random-agent" in json.loads(kp.read_text())["red"]
