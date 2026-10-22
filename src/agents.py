@@ -696,3 +696,17 @@ class Agent:
         except Exception as e:
             print(f"Error summarizing experience: {e}")
             return None
+
+
+class RedAgent(Agent):
+    """Red operator with its role fixed. Behavior identical to Agent(role='red')."""
+
+    def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
+        super().__init__(role="red", executor=executor, model=model, **kw)
+
+
+class BlueAgent(Agent):
+    """Blue defender with its role fixed. Behavior identical to Agent(role='blue')."""
+
+    def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
+        super().__init__(role="blue", executor=executor, model=model, **kw)

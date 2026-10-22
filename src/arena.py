@@ -22,7 +22,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.agents import Agent
+from src.agents import Agent, RedAgent, BlueAgent
 from src.executor import ToolExecutor, _is_ipv4
 from src.mock_executor import MockExecutor
 from src.orchestrator import Orchestrator
@@ -237,11 +237,11 @@ def build_agents(
                 attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
         else:
             red_ex = blue_ex
-    red = Agent(
-        role="red", executor=red_ex, model=model,
+    red = RedAgent(
+        executor=red_ex, model=model,
         evade=evade, earned=earned, attacker_executor=attacker_ex,
     )
-    blue = Agent(role="blue", executor=blue_ex, model=model, observe=observe)
+    blue = BlueAgent(executor=blue_ex, model=model, observe=observe)
     return red, blue
 
 
