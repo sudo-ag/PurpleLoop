@@ -314,11 +314,12 @@ def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
 
 
 class Agent:
-    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False):
+    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None):
         self.role = role
         self.executor = executor
         self.model = model
         self.experience = experience or []
+        self.target = target
         # Red's attacker box (Kali) channel, for recon/credential attacks run
         # from red's own machine against the target. Only meaningful for red.
         self.attacker_executor = attacker_executor if role.lower() == "red" else None
@@ -339,6 +340,10 @@ class Agent:
         self.observe = observe and role.lower() == "blue"
         if self.observe:
             self.system_prompt += BLUE_OBSERVE_ADDENDUM
+        # Target-specific environment notes (training technique hints only, never
+        # answers) ride in via the TargetProfile, not baked into core doctrine.
+        if target is not None and getattr(target, "env_notes", ""):
+            self.system_prompt += f"\n\nENVIRONMENT NOTES:\n{target.env_notes}\n"
         # Initialize Ollama client with a specific timeout for stability
         self.client = Client(timeout=600.0)
 

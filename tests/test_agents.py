@@ -111,3 +111,21 @@ def test_earned_red_gets_use_credential_tool():
     names = lambda a: {t["function"]["name"] for t in a.tools}
     assert "use_credential" in names(earned)
     assert "use_credential" not in names(handed)
+
+
+# --- Task 2: TargetProfile seam -------------------------------------------
+
+def test_red_core_prompt_has_no_box_specific_app_name():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), earned=True)
+    assert "payroll_app.php" not in red.system_prompt  # discovered, not baked
+
+
+def test_env_notes_from_profile_reach_the_prompt():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    from src.target import TargetProfile
+    prof = TargetProfile(host="x", env_notes="HINT: a payroll web app is present")
+    red = RedAgent(executor=MockExecutor(), earned=True, target=prof)
+    assert "payroll web app" in red.system_prompt
