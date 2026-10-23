@@ -336,3 +336,49 @@ tier board, milestones, and verdict. Needs a **turn → one-line move** summariz
 - Art/assets: simple CSS/SVG sprites + type-effectiveness flavor, or static art.
 - Supersedes the earlier "replay viewer renders only the single winner, not the
   tier board" gap — the battle view *is* the tier-board visualization.
+
+---
+
+## Session 2026-10-22 — arms race advanced; Phase 1 decoupling merged
+
+**Shipped to `master` (pushed):**
+- **Remediation grace window** (dial 4 refinement) — `--remediate-grace` (default 4):
+  blue's account lock held K turns after red's foothold → unpinned the T1 auto-win.
+- **Red earned privesc** (dial 2) — phase seam: unprivileged foothold → `privilege_check`
+  (escalate), not the handed-era `flag_discovery`.
+- **Account triage** (no-seeding) — red reads world-readable `getent group sudo docker`
+  and pivots to a privileged dumped cred. Reaches root via `sudo -S` or docker breakout.
+- **Phase 1 — agent/game decoupling (MERGED)** — self-contained `RedAgent`/`BlueAgent`
+  that `run()` standalone; `Referee` (scoring), `TargetProfile` (box-facts as data),
+  `Learner` (portable N-episode learning), `trajectory.py`. 207 tests. Spec+plan in
+  `docs/superpowers/{specs,plans}/2026-10-22-phase1-*`.
+
+**Learnings (bugs the layered checks caught):** cross-episode state leak on reused
+agents (→ `reset_episode`); live ollama `ToolCall` objects aren't dicts, so the
+relocated self-steering was dead live until `_normalize_action` at `record_turn`.
+Lesson: offline tests with dict literals + orchestrator-only re-baselines can't see
+the standalone/steering path — a live `agent.run()` smoke test is mandatory.
+
+### Next steps (ranked)
+1. **Blue docker/container sensor** (STARTED — branch `blue-docker-sensor`, plan ready,
+   not built). Blue is blind to the docker-breakout root read (no sudo/auth.log trace).
+   Add `ToolExecutor.investigate_docker()` (`sudo docker ps -a` + inspect mounts;
+   host-root bind mount = breakout → `flag_access_detected=True`, which
+   `_check_blue_victory` already credits) + register in `BlueAgent` tools /
+   `BLUE_TOOL_PRIORITY`. No scoring change. Needs the live box. **This is dial 3 /
+   the spec's "every tier needs a matching sensor" rule for T3-via-docker.**
+2. **Blue response upgrade** — act on blue's own learned lesson: prefer the network
+   block (`contain_attacker`) over the laggy `remediate_account`. Note: `--observe`
+   holds the network DROP, so this mostly affects non-observe/deployment.
+3. **Phase 2 — MCP server** — wrap the now-standalone agents as high-level verbs
+   (`run_red_campaign`, `deploy_blue`, `train_X_on`) — the portability north star.
+4. **Slice 2 — T2 exfil** (still inert) — red sqlmap-dump signal + web/DB sensor.
+5. Minor (deferred from Phase 1 review): move `merge_lesson`/`dedupe_lessons` out of
+   `orchestrator.py` into a knowledge module (agents import them via deferred import now).
+
+### The vision (decided this session)
+Agents are the portable product; the box is the dojo. Train on Metasploitable +
+simulated scenarios, but keep intelligence/workflow transferable to any user-chosen
+system (lessons are tradecraft, not box facts; facts are discovered, not baked).
+Phases: A juggernauts → 1 decouple (DONE) → 2 MCP → 3 generalize+authorize arbitrary
+targets → 4 multi-agent + real pentest/monitor engagements with a remediation report.
