@@ -532,9 +532,23 @@ class Agent:
         self.has_foothold = False
         self._last_observation = ""
 
+    @staticmethod
+    def _normalize_action(action: Any) -> Any:
+        """Live tool calls arrive as ollama ToolCall objects, not dicts. The
+        agent's own steering filters history with isinstance(action, dict), so
+        normalize a tool-call object to a plain dict here — one boundary — or the
+        brain reads an empty history. Text/None/dict pass through unchanged."""
+        if action is None or isinstance(action, (str, dict)):
+            return action
+        try:
+            fn = action.get("function", {})
+            return {"function": {"name": fn.get("name"), "arguments": dict(fn.get("arguments") or {})}}
+        except Exception:
+            return action
+
     def record_turn(self, observation: str, action: Any, output: str) -> None:
         """Append one turn to the agent's own history stream."""
-        self.history.append(Turn(n=len(self.history), observation=observation, action=action, output=output))
+        self.history.append(Turn(n=len(self.history), observation=observation, action=self._normalize_action(action), output=output))
 
     def _load_knowledge(self) -> None:
         """Load this role's lessons from the shared knowledge file; empty on any
@@ -658,7 +672,9 @@ class Agent:
                 obs = self._last_observation
                 calls = action if isinstance(action, list) else [action]
                 for call in calls:
-                    output = self.process_tool_call(call) if isinstance(call, dict) else ""
+                    # A text action is a str (nothing to execute); anything else is
+                    # a tool call (dict OR a live ToolCall object) — execute it.
+                    output = "" if isinstance(call, str) else self.process_tool_call(call)
                     self.record_turn(obs, call, output)
                     traj.turns.append(self.history[-1])
             except Exception as e:

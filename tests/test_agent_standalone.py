@@ -133,3 +133,50 @@ def test_reset_episode_clears_last_observation():
     red._last_observation = "stale from last episode"
     red.reset_episode()
     assert red._last_observation == ""
+
+
+# --- live tool-call objects are NOT dicts: normalize so the brain can read them
+
+class _FakeFn:
+    def __init__(self, name, arguments):
+        self._d = {"name": name, "arguments": arguments}
+    def get(self, k, default=None):
+        return self._d.get(k, default)
+    def __getitem__(self, k):
+        return self._d[k]
+
+
+class _FakeToolCall:
+    """Mimics an ollama ToolCall: supports .get/[] but is NOT a dict."""
+    def __init__(self, name, arguments):
+        self._fn = _FakeFn(name, arguments)
+    def get(self, k, default=None):
+        return self._fn if k == "function" else default
+    def __getitem__(self, k):
+        if k == "function":
+            return self._fn
+        raise KeyError(k)
+
+
+def test_record_turn_normalizes_toolcall_object_to_dict():
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    tc = _FakeToolCall("execute_command", {"command": "id"})
+    assert not isinstance(tc, dict)
+    red.record_turn("obs", tc, "uid=1120(lando)")
+    stored = red.history[0].action
+    assert isinstance(stored, dict)
+    assert stored["function"]["name"] == "execute_command"
+    assert stored["function"]["arguments"] == {"command": "id"}
+    assert red._tool_turns()   # steering can now read the turn
+
+
+def test_run_executes_toolcall_actions_not_skips_them(monkeypatch):
+    red = RedAgent(executor=MockExecutor(), model="llama3.2:latest")
+    tc = _FakeToolCall("execute_command", {"command": "id"})
+    monkeypatch.setattr(red, "act", lambda obs: [tc])
+    ran = {}
+    monkeypatch.setattr(red, "process_tool_call", lambda c: ran.setdefault("ran", True) and "" or "uid=1120")
+    traj = red.run(max_turns=1)
+    assert ran.get("ran") is True                      # executed, not skipped by a dict guard
+    assert isinstance(traj.turns[-1].action, dict)     # stored normalized
+    assert red._tool_turns()                           # brain reads it
