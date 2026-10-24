@@ -1042,12 +1042,40 @@ BLUE_TOOL_PRIORITY = [
     "investigate_network",
 ]
 
+# Triage playbook: the sensors that CONFIRM and ATTRIBUTE an intrusion (source,
+# auth, what ran), reached for in the TRIAGE phase ahead of blind breadth.
+# `investigate_docker` (container-escape posture) slots in here once it lands.
+BLUE_CORROBORATION = [
+    "investigate_connections",
+    "investigate_logs",
+    "investigate_file_access",
+    "investigate_processes",
+]
+
+BLUE_TRIAGE_GUIDANCE = {
+    "TRIAGE": (
+        "TRIAGE — you have an unconfirmed lead (an anomaly, not yet a confirmed "
+        "attacker). Corroborate it across sensors BEFORE acting: pin the source "
+        "with `investigate_connections`, confirm auth activity with "
+        "`investigate_logs`, see what ran with `investigate_processes` / "
+        "`investigate_file_access` (check container-escape posture with "
+        "`investigate_docker` when available). Do NOT contain on a bare "
+        "connection — confirm malice first."
+    ),
+    "ATTRIBUTE": (
+        "ATTRIBUTE — the attacker is confirmed. Fix the source IP and identify "
+        "the compromised account and technique from your findings, then stage "
+        "the response."
+    ),
+}
+
 
 class BlueAgent(Agent):
-    """Blue defender with its role fixed, and its own tool-steering — the
-    log-heartbeat + least-recently-used breadth rotation + contain order,
-    computed from its OWN history. Game facts (observe mode, confirmed
-    attackers, whether already contained) are passed in by the caller."""
+    """Blue defender with its role fixed, following a 4-phase triage playbook
+    computed from its OWN history: MONITOR (logs-heartbeat + breadth rotation)
+    -> TRIAGE (corroborate an unconfirmed lead) -> ATTRIBUTE (pin source +
+    account on a confirmed attacker) -> RESPOND (contain). Game facts (observe
+    mode, confirmed attackers, whether already contained) are passed in."""
 
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="blue", executor=executor, model=model, **kw)
@@ -1111,11 +1139,45 @@ class BlueAgent(Agent):
                     used.append(name)
         return used
 
+    def _has_lead(self) -> bool:
+        """An unconfirmed anomaly in blue's own output — a foreign connection
+        with no scan yet, or a sub-threshold run of failed auths. Enough to open
+        a triage, not enough to attribute/act (that's `confirmed_attackers`)."""
+        own = getattr(self.executor, "control_source_ip", None)
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            tool = data.get("tool")
+            if tool == "investigate_connections" and not data.get("port_scanners"):
+                if any(ip and ip != own for ip in data.get("foreign_ips") or []):
+                    return True
+            elif tool == "investigate_logs":
+                fails = data.get("failed_attempts") or 0
+                if 0 < fails < BLUE_BRUTE_FORCE_THRESHOLD:
+                    return True
+        return False
+
+    def triage_phase(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
+        if confirmed_attackers:
+            if not observe and not contained:
+                return "RESPOND"
+            return "ATTRIBUTE"          # confirmed but held (observe) or already contained
+        if self._has_lead():
+            return "TRIAGE"
+        return "MONITOR"
+
     def tool_guidance(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
-        # With EVIDENCE of malice from an attacker IP (scan / brute-force /
-        # confirmed breach), give a direct containment order — the model otherwise
-        # narrates the finding instead of acting. Held in observe mode by the game.
-        if not observe and not contained and confirmed_attackers:
+        phase = self.triage_phase(observe, confirmed_attackers, contained)
+
+        # RESPOND — EVIDENCE of malice and able to act: a direct containment order,
+        # since the model otherwise narrates the finding instead of acting.
+        if phase == "RESPOND":
             ip = confirmed_attackers[0]
             return (
                 f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
@@ -1125,6 +1187,26 @@ class BlueAgent(Agent):
                 f"wins the engagement. Do this before any other tool."
             )
 
+        # ATTRIBUTE — confirmed but held (observe mode) or already contained:
+        # document the source/account; don't fire a response.
+        if phase == "ATTRIBUTE":
+            ip = confirmed_attackers[0]
+            hold = (" You are in OBSERVE mode: keep documenting and watching; hold containment."
+                    if observe else " Already contained — keep watching for re-entry from a new source.")
+            return f"Blue guidance: {BLUE_TRIAGE_GUIDANCE['ATTRIBUTE']} Attacker: {ip}.{hold}"
+
+        # TRIAGE — an unconfirmed lead: corroborate across the attribution sensors
+        # (least-recently-used of them), ahead of blind breadth rotation.
+        if phase == "TRIAGE":
+            used = self._tools_used()
+            last_use = {t: i for i, t in enumerate(used)}
+            next_tool = min(BLUE_CORROBORATION, key=lambda t: last_use.get(t, -1))
+            return (
+                f"Blue guidance: {BLUE_TRIAGE_GUIDANCE['TRIAGE']} This turn, call "
+                f"`{next_tool}`."
+            )
+
+        # MONITOR — quiet: logs heartbeat, then least-recently-used breadth.
         used = self._tools_used()
         last = used[-1] if used else None
         guidance = "You are the blue defender."
