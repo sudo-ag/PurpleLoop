@@ -128,6 +128,40 @@ def test_docker_ts_epoch():
     assert ToolExecutor._docker_ts_epoch("") is None
 
 
+# --- daemon-log backstop: catches a --rm breakout gone from ps -a ----------
+
+# A real line captured from the target's /var/log/upstart/docker.log.
+LOG_LINE = ('time="2026-10-24T04:38:27.7Z" level=warning msg="Falling back to '
+            'default propagation for bind source in daemon root" '
+            'container=096391e6596560cf3a56a40d8d45676011d9e59fe source=/')
+
+
+def test_daemon_log_recovers_a_destroyed_breakout():
+    ep = ToolExecutor._docker_ts_epoch("2026-10-24T04:38:27.7Z")
+    ghosts = _ex()._parse_docker_log(LOG_LINE, OBJ, since_epoch=ep - 100)
+    assert len(ghosts) == 1
+    g = ghosts[0]
+    assert g["reaches_objective"] and g["in_window"] and g["from_daemon_log"]
+    assert _ex()._assemble_docker_finding(ghosts)["flag_access_detected"] is True
+
+
+def test_daemon_log_out_of_window_is_not_credited():
+    ep = ToolExecutor._docker_ts_epoch("2026-10-24T04:38:27.7Z")
+    ghosts = _ex()._parse_docker_log(LOG_LINE, OBJ, since_epoch=ep + 100)
+    assert ghosts[0]["in_window"] is False
+    assert _ex()._assemble_docker_finding(ghosts)["flag_access_detected"] is False
+
+
+def test_daemon_log_dedupes_containers_already_in_ps_a():
+    seen = {"096391e6596560cf3a56a40d8d45676011d9e59feaf8a93a2401da0cb2e24798"}
+    assert _ex()._parse_docker_log(LOG_LINE, OBJ, since_epoch=None, seen_ids=seen) == []
+
+
+def test_daemon_log_ignores_non_root_source():
+    line = LOG_LINE.replace("source=/", "source=/var/lib/docker")
+    assert _ex()._parse_docker_log(line, OBJ, since_epoch=None) == []
+
+
 # --- mock + the win contract ----------------------------------------------
 
 def test_mock_returns_a_breakout_breach():

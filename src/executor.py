@@ -743,8 +743,12 @@ class ToolExecutor:
         `flag_access_detected` are derived from the injected `objective_path`, so
         on a real target with no flag the sensor still reports posture and credits
         nothing. shortcut: reads `docker ps -a`, so a fast `--rm` cat-and-exit can
-        auto-remove between polls — upgrade to the docker daemon log if red learns
-        to always `--rm`."""
+        auto-remove between polls, so it is backstopped by a scan of the docker
+        daemon log, which records a host-root bind mount (`source=/`) even for a
+        `--rm` container that is already destroyed. shortcut: the daemon-log
+        backstop only catches a full host-root (`source=/`) bind — a narrower
+        `-v /root:/x` bind leaves no daemon-log line (only `ps -a` would catch it,
+        and only before `--rm`)."""
         raw = self.execute(
             "sudo docker ps -aq 2>/dev/null | xargs -r sudo docker inspect 2>/dev/null || true"
         )
@@ -752,7 +756,13 @@ class ToolExecutor:
             records = json.loads(raw) if raw.strip() else []
         except Exception:
             records = []
-        return self._parse_docker(records, objective_path, self.analysis_since_epoch)
+        containers = self._containers_from_inspect(records, objective_path, self.analysis_since_epoch)
+        log = self.execute(
+            "sudo grep 'bind source in daemon root' /var/log/upstart/docker.log 2>/dev/null | tail -200 || true"
+        )
+        seen = {c["id"] for c in containers if c.get("id")}
+        containers += self._parse_docker_log(log, objective_path, self.analysis_since_epoch, seen)
+        return self._assemble_docker_finding(containers)
 
     @staticmethod
     def _host_path_reaches(source: str, objective_path: str) -> bool:
@@ -775,6 +785,13 @@ class ToolExecutor:
 
     def _parse_docker(self, records: List[Dict[str, Any]], objective_path: str,
                       since_epoch: Optional[int] = None) -> Dict[str, Any]:
+        """ps -a path only (no daemon-log backstop) — used by investigate_docker
+        and by the unit tests that feed inspect records directly."""
+        return self._assemble_docker_finding(
+            self._containers_from_inspect(records, objective_path, since_epoch))
+
+    def _containers_from_inspect(self, records: List[Dict[str, Any]], objective_path: str,
+                                 since_epoch: Optional[int]) -> List[Dict[str, Any]]:
         containers = []
         for d in records:
             hc = d.get("HostConfig", {}) or {}
@@ -795,6 +812,7 @@ class ToolExecutor:
             in_window = since_epoch is None or started_epoch is None or started_epoch >= since_epoch
             args = d.get("Args") or []
             containers.append({
+                "id": d.get("Id", ""),
                 "name": (d.get("Name") or "").lstrip("/"),
                 "image": d.get("Config", {}).get("Image") or d.get("Image", ""),
                 "state": d.get("State", {}).get("Status", ""),
@@ -807,6 +825,39 @@ class ToolExecutor:
                 "started_at": started,
                 "in_window": in_window,
             })
+        return containers
+
+    def _parse_docker_log(self, raw_log: str, objective_path: str,
+                          since_epoch: Optional[int], seen_ids: "set" = frozenset()) -> List[Dict[str, Any]]:
+        """Recover host-root bind mounts from the docker daemon log — the backstop
+        that catches a `--rm` breakout already gone from `ps -a`. The daemon logs
+        `... container=<id> source=<path>` when a bind source is the host root."""
+        ghosts = []
+        for line in raw_log.splitlines():
+            if "bind source in daemon root" not in line:
+                continue
+            src = re.search(r"source=(\S+)", line)
+            cid = re.search(r"container=(\S+)", line)
+            tsm = re.search(r'time="([^"]+)"', line)
+            if not src or not self._host_path_reaches(src.group(1), objective_path):
+                continue
+            container_id = cid.group(1) if cid else ""
+            if any(container_id and (s.startswith(container_id) or container_id.startswith(s)) for s in seen_ids):
+                continue  # already reported from ps -a
+            ts = tsm.group(1) if tsm else ""
+            ep = self._docker_ts_epoch(ts)
+            in_window = since_epoch is None or ep is None or ep >= since_epoch
+            ghosts.append({
+                "id": container_id, "name": container_id[:12], "image": "",
+                "state": "destroyed (--rm)",
+                "command": "", "host_mounts": [f"{src.group(1)}:(host root)"],
+                "privileged": False, "host_namespaces": [],
+                "escape_capable": True, "reaches_objective": True,
+                "started_at": ts, "in_window": in_window, "from_daemon_log": True,
+            })
+        return ghosts
+
+    def _assemble_docker_finding(self, containers: List[Dict[str, Any]]) -> Dict[str, Any]:
         # Only an in-window breakout is this episode's breach; a stale residue
         # container is posture (SUSPICIOUS), not a win credit.
         breach = any(c["reaches_objective"] and c["in_window"] for c in containers)
