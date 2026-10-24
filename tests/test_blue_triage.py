@@ -52,6 +52,13 @@ def _docker_turn(escape: bool) -> Turn:
     return Turn(2, "", {"function": {"name": "investigate_docker", "arguments": {}}}, json.dumps(out))
 
 
+def _revoke_turn() -> Turn:
+    import json
+    out = {"tool": "revoke_escalation", "target_user": "boba_fett",
+           "revoked_groups": ["docker"], "assessment": "REVOKED"}
+    return Turn(2, "", {"function": {"name": "revoke_escalation", "arguments": {}}}, json.dumps(out))
+
+
 # --- phase selection -------------------------------------------------------
 
 def test_quiet_history_is_monitor():
@@ -138,25 +145,32 @@ def test_foothold_without_docker_check_is_identify():
     assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "IDENTIFY"
 
 
-def test_identify_steers_to_investigate_docker():
-    blue = _foothold_blue()
-    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "investigate_docker" in g
-    assert "boba_fett" in g
-
-
-def test_identify_preempts_with_revoke_escalation():
-    # The preemptive least-privilege move must be ordered at IDENTIFY, before a
-    # breakout is even detected.
+def test_identify_preempts_with_revoke_escalation_and_defers_investigation():
+    # IDENTIFY's ONLY move is the immediate revoke — speed over investigation,
+    # since red's breakout is one command away.
     blue = _foothold_blue()
     g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
     assert "revoke_escalation" in g and "boba_fett" in g
+    assert "investigate_docker" not in g  # deferred to RESPOND
+
+
+def test_identify_holds_until_revoke_runs_not_just_the_docker_check():
+    # Running investigate_docker must NOT release IDENTIFY — only the revoke does.
+    blue = _foothold_blue()
+    blue.history.append(_docker_turn(escape=True))
+    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "IDENTIFY"
 
 
 def test_identify_fires_even_in_observe():
-    # Observe holds the response, not the investigation — blue must still look.
+    # Observe holds the network block, not the on-host neutralize — blue still acts.
     blue = _foothold_blue()
     assert blue.triage_phase(observe=True, confirmed_attackers=["192.168.64.11"], contained=False) == "IDENTIFY"
+
+
+def test_phase_advances_to_respond_once_revoke_has_run():
+    blue = _foothold_blue()
+    blue.history.append(_revoke_turn())
+    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "RESPOND"
 
 
 def test_recon_only_scan_skips_identify_and_contains_fast():
@@ -169,22 +183,27 @@ def test_recon_only_scan_skips_identify_and_contains_fast():
     assert "contain_attacker" in g
 
 
-# --- RESPOND branches on the identified technique -------------------------
+# --- RESPOND (post-revoke): confirm the outcome, then finish containment ---
 
-def test_respond_to_container_escape_locks_account_and_contains():
+def test_respond_after_revoke_confirms_with_investigate_docker():
     blue = _foothold_blue()
-    blue.history.append(_docker_turn(escape=True))
-    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "RESPOND"
+    blue.history.append(_revoke_turn())
     g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "CONTAINER ESCAPE" in g
-    assert "revoke_escalation" in g and "boba_fett" in g
-    assert "remediate_account" in g
-    assert "contain_attacker" in g
+    assert "investigate_docker" in g and "contain_attacker" in g
 
 
-def test_respond_to_plain_foothold_remediates_account():
+def test_respond_reports_breakout_that_beat_the_revoke():
     blue = _foothold_blue()
-    blue.history.append(_docker_turn(escape=False))  # checked, no escape found
+    blue.history.append(_revoke_turn())
+    blue.history.append(_docker_turn(escape=True))  # a breakout got through first
     g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "CONTAINER ESCAPE" not in g
-    assert "remediate_account" in g and "boba_fett" in g
+    assert "breakout DID occur" in g
+    assert "contain_attacker" in g and "remediate_account" in g
+
+
+def test_respond_reports_no_breakout_when_prevention_held():
+    blue = _foothold_blue()
+    blue.history.append(_revoke_turn())
+    blue.history.append(_docker_turn(escape=False))  # revoke held; nothing got through
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "No breakout got through" in g

@@ -1113,10 +1113,9 @@ BLUE_TRIAGE_GUIDANCE = {
         "the response."
     ),
     "IDENTIFY": (
-        "IDENTIFY — a foothold has landed; before responding, determine HOW this "
-        "account can become root. The loudest path on this host is a docker-group "
-        "breakout, which leaves NO sudo/auth-log trace — `investigate_docker` is "
-        "the only sensor that sees it."
+        "IDENTIFY / NEUTRALIZE — a foothold has landed and root is one command away "
+        "(a docker-group breakout leaves NO sudo/auth-log trace). Speed wins here: "
+        "cut the escalation path BEFORE investigating."
     ),
 }
 
@@ -1236,6 +1235,9 @@ class BlueAgent(Agent):
     def _ran_escalation_check(self) -> bool:
         return "investigate_docker" in self._tools_used()
 
+    def _revoked_escalation(self) -> bool:
+        return "revoke_escalation" in self._tools_used()
+
     def _escape_detected(self) -> bool:
         """True if blue's docker posture check found an escape-capable container."""
         for t in self.history:
@@ -1252,10 +1254,11 @@ class BlueAgent(Agent):
 
     def triage_phase(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
         if confirmed_attackers:
-            # A landed foothold (a compromised account) must be IDENTIFIED — check
-            # the escalation surface (docker/sudo) — before responding; a recon-only
-            # port scan skips straight to a fast contain.
-            if self._attacker_account() and not self._ran_escalation_check():
+            # A landed foothold (a compromised account) must first be NEUTRALIZED —
+            # strip its escalation path — before anything else, because red's
+            # breakout is one command away. IDENTIFY holds until the revoke runs.
+            # A recon-only port scan (no account) skips straight to a fast contain.
+            if self._attacker_account() and not self._revoked_escalation():
                 return "IDENTIFY"
             if not observe and not contained:
                 return "RESPOND"
@@ -1275,10 +1278,11 @@ class BlueAgent(Agent):
             account = self._attacker_account()
             return (
                 f"Blue guidance: {BLUE_TRIAGE_GUIDANCE['IDENTIFY']} Foothold on "
-                f"'{account}' from {ip}. PREEMPT the escalation NOW: call "
-                f"`revoke_escalation` user=\"{account}\" to strip its docker/sudo "
-                f"access before it breaks out. Then run `investigate_docker` to "
-                f"confirm whether a breakout already happened."
+                f"'{account}' from {ip}, and its NEXT command is likely the breakout. "
+                f"Your ONLY move this turn: call `revoke_escalation` user=\"{account}\" "
+                f"— it strips docker/sudo and applies immediately, so red's next "
+                f"command cannot escalate. Do NOT `remediate_account` first (that lags "
+                f"behind a grace window) and do NOT investigate yet — REVOKE NOW."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only
@@ -1286,20 +1290,20 @@ class BlueAgent(Agent):
         if phase == "RESPOND":
             ip = confirmed_attackers[0]
             account = self._attacker_account()
-            if account and self._escape_detected():
+            # Escalation already revoked here (IDENTIFY holds until it is). Confirm
+            # whether a breakout beat the revoke, then finish containment.
+            if account and not self._ran_escalation_check():
                 return (
-                    f"Blue guidance: CONTAINER ESCAPE — '{account}' from {ip} reached root "
-                    f"via a docker breakout. Shut the path: `revoke_escalation` "
-                    f"user=\"{account}\" (strips docker/sudo so it cannot break out again), "
-                    f"`remediate_account` user=\"{account}\", and `contain_attacker` "
-                    f"ip=\"{ip}\"."
+                    f"Blue guidance: You revoked '{account}'s escalation path. Now CONFIRM "
+                    f"the outcome: run `investigate_docker` to see whether a breakout "
+                    f"happened before you cut the path, and `contain_attacker` ip=\"{ip}\"."
                 )
             if account:
+                lead = ("A breakout DID occur before you cut the path — " if self._escape_detected()
+                        else "No breakout got through — ")
                 return (
-                    f"Blue guidance: Foothold confirmed on '{account}' from {ip}. Respond: "
-                    f"`revoke_escalation` user=\"{account}\" to strip any docker/sudo "
-                    f"escalation path, then `remediate_account` user=\"{account}\" and "
-                    f"`contain_attacker` ip=\"{ip}\"."
+                    f"Blue guidance: {lead}finish the response: `contain_attacker` "
+                    f"ip=\"{ip}\" and `remediate_account` user=\"{account}\"."
                 )
             return (
                 f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
