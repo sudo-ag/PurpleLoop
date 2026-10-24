@@ -410,6 +410,17 @@ T1). The docker path is **converged / blue-favored** — more steering won't mov
 (both sides hit the model-compliance ceiling on the 1-turn reflex; blue only won
 deterministically).
 
+### North-star vision (documented)
+`docs/superpowers/specs/2026-10-23-purpleloop-vision-assessment-platform.md` —
+PurpleLoop as an **autonomous purple-team assessment platform** for a company's
+own authorized infra: **red = forge** (fierce via locally-run VulnHub/HTB
+breadth), **blue = product** (resident, profiles its box, augments the human
+team). One run → **missed-angle blind-spot kill chain** (engineers) + **resilience
+trend** (management), never "unbreakable." The **pair is the moat**. Assessment
+mode, not a production autoresponder. Enabling path below (richer narrative → 2nd
+Linux box + blue auto-profiling → MCP → analytics → Windows far). Read the doc
+before the big phase decisions.
+
 ### Next steps (ranked)
 1. **Red new escalation vector — Dirty COW (CVE-2016-5195), DECIDED.** Kernel
    `3.13.0-24`, gcc 4.8.4 on target. **Blocked on 3 prereqs** (see HANDOFF):
