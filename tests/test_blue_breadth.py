@@ -18,6 +18,7 @@ def test_breadth_rotates_to_least_recently_used():
         "investigate_connections",
         "investigate_file_access",
         "investigate_processes",
+        "investigate_docker",
         "investigate_users",
         "investigate_cron",
         "investigate_network",

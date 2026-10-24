@@ -434,6 +434,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_docker',
+                        'description': 'Inspect containers for an escape-to-host posture (MITRE T1611): a container that bind-mounts the host filesystem, runs privileged, or shares a host namespace can read the host as root with NO sudo or auth-log trace — the docker-group breakout that other sensors miss entirely. Returns escape-capable containers; a BREACH / flag_access_detected means one can reach the objective. Run this to cover the container-escape path, especially once you see a foothold on a user that may be in the docker group.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'contain_attacker',
                         'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
                         'parameters': {
@@ -795,6 +803,14 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_connections", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_docker':
+            try:
+                objective = getattr(self.target, "flag_path", None) or "/root/flag.txt"
+                result = self.executor.investigate_docker(objective)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_docker", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")
             if self.observe:
@@ -1037,6 +1053,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_connections",
     "investigate_file_access",
     "investigate_processes",
+    "investigate_docker",
     "investigate_users",
     "investigate_cron",
     "investigate_network",
@@ -1050,6 +1067,7 @@ BLUE_CORROBORATION = [
     "investigate_logs",
     "investigate_file_access",
     "investigate_processes",
+    "investigate_docker",
 ]
 
 BLUE_TRIAGE_GUIDANCE = {

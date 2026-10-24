@@ -202,6 +202,12 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     blue_ex.execute("sudo truncate -s 0 /var/log/auth.log 2>/dev/null || true")
     actions.append("cleared auth.log")
 
+    # Remove stopped containers — red's docker-breakout residue — so next episode's
+    # posture sensor doesn't credit a stale breakout. Running baseline service
+    # containers are untouched by prune.
+    blue_ex.execute("sudo docker container prune -f 2>/dev/null || true")
+    actions.append("pruned stopped containers")
+
     return {"episode": episode, "actions": actions}
 
 

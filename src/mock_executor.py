@@ -174,6 +174,25 @@ class MockExecutor:
             ),
         }
 
+    def investigate_docker(self, objective_path: str = "/root/flag.txt") -> Dict[str, Any]:
+        logger.info("MockExecutor.investigate_docker: returning a canned breakout container")
+        container = {
+            "name": "pl_breakout", "image": "alpine", "state": "exited",
+            "command": f"cat /mnt{objective_path}", "host_mounts": ["/:/mnt"],
+            "privileged": False, "host_namespaces": [],
+            "escape_capable": True, "reaches_objective": True,
+        }
+        return {
+            "tool": "investigate_docker", "containers": [container],
+            "escape_capable_count": 1, "flag_access_detected": True,
+            "assessment": "BREACH",
+            "summary": "Docker: 1 escape-capable container(s); HOST-OBJECTIVE REACHABLE (breakout).",
+            "recommendation": (
+                "A container can read the host objective via a bind mount — this is "
+                "a container-escape to root. Stop/kill the container and block the source."
+            ),
+        }
+
     def investigate_file_access(self, file_path: str = "/root/flag.txt") -> Dict[str, Any]:
         logger.info(f"MockExecutor.investigate_file_access: checking {file_path}")
         matching_events = [e for e in self._file_access_events if e.get("file") == file_path]

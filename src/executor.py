@@ -284,6 +284,9 @@ class ToolExecutor:
         # Blue log analysis is scoped to events at/after this target-clock epoch.
         # None = no scoping (full history), which is the default for unit tests.
         self.analysis_since: Optional[float] = None
+        # True UTC epoch of the window start, for sources that carry an absolute
+        # timestamp (docker StartedAt) rather than a syslog-local one.
+        self.analysis_since_epoch: Optional[int] = None
         self._analysis_year: int = datetime.datetime.now().year
         # The source IP of blue's own control session on the target, so blue can
         # tell its own management traffic from the attacker's. Detected at
@@ -610,13 +613,16 @@ class ToolExecutor:
         # when controller and target timezones differ that mismatch skews the
         # window and lets pre-window events slip in. Deriving both sides from the
         # target's wall clock through one parser makes the offset cancel out.
-        out = self.execute('date "+%Y %b %e %H:%M:%S"').strip()
+        out = self.execute('date "+%Y %b %e %H:%M:%S|%s"').strip()
         try:
-            year_str, clock = out.split(" ", 1)
+            stamp, epoch = out.rsplit("|", 1)
+            self.analysis_since_epoch = int(epoch)
+            year_str, clock = stamp.split(" ", 1)
             self._analysis_year = int(year_str)
             self.analysis_since = _syslog_line_epoch(clock, self._analysis_year, None)
         except (ValueError, IndexError):
             self.analysis_since = None
+            self.analysis_since_epoch = None
         if self.analysis_since is None:
             logger.warning("Could not read target clock; blue will see full log history.")
         else:
@@ -727,6 +733,107 @@ class ToolExecutor:
             "sudo dmesg 2>/dev/null | grep PLWATCH | tail -800 || true"
         )
         return self._parse_connections(raw)
+
+    def investigate_docker(self, objective_path: str = "/root/flag.txt") -> Dict[str, Any]:
+        """Posture sensor for container-escape (MITRE T1611): a container that
+        bind-mounts the host filesystem, runs privileged, or shares a host
+        namespace can read the host as root WITHOUT any sudo/auth-log trace — the
+        docker-group breakout blue is otherwise blind to. `escape_capable` and the
+        container list are universal tradecraft; `reaches_objective` /
+        `flag_access_detected` are derived from the injected `objective_path`, so
+        on a real target with no flag the sensor still reports posture and credits
+        nothing. shortcut: reads `docker ps -a`, so a fast `--rm` cat-and-exit can
+        auto-remove between polls — upgrade to the docker daemon log if red learns
+        to always `--rm`."""
+        raw = self.execute(
+            "sudo docker ps -aq 2>/dev/null | xargs -r sudo docker inspect 2>/dev/null || true"
+        )
+        try:
+            records = json.loads(raw) if raw.strip() else []
+        except Exception:
+            records = []
+        return self._parse_docker(records, objective_path, self.analysis_since_epoch)
+
+    @staticmethod
+    def _host_path_reaches(source: str, objective_path: str) -> bool:
+        """True if host dir `source` (a bind-mount source) contains objective_path."""
+        src = os.path.normpath(source or "")
+        obj = os.path.normpath(objective_path or "")
+        return src == "/" or obj == src or obj.startswith(src + "/")
+
+    @staticmethod
+    def _docker_ts_epoch(ts: str) -> Optional[int]:
+        """docker's StartedAt is absolute UTC ISO8601 ('2026-10-15T22:53:20.5Z');
+        parse to a true epoch. Returns None for 'never started' / unparseable."""
+        if not ts or ts.startswith("0001-01-01"):
+            return None
+        try:
+            return int(datetime.datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")
+                       .replace(tzinfo=datetime.timezone.utc).timestamp())
+        except ValueError:
+            return None
+
+    def _parse_docker(self, records: List[Dict[str, Any]], objective_path: str,
+                      since_epoch: Optional[int] = None) -> Dict[str, Any]:
+        containers = []
+        for d in records:
+            hc = d.get("HostConfig", {}) or {}
+            mounts = [(m.get("Source", ""), m.get("Destination", "")) for m in (d.get("Mounts") or [])]
+            host_ns = sorted(
+                ns for ns, field in (("pid", "PidMode"), ("net", "NetworkMode"),
+                                     ("ipc", "IpcMode"), ("userns", "UsernsMode"))
+                if str(hc.get(field, "")) == "host"
+            )
+            privileged = bool(hc.get("Privileged"))
+            reaches = any(self._host_path_reaches(src, objective_path) for src, _ in mounts)
+            escape_capable = reaches or privileged or bool(host_ns)
+            if not escape_capable:
+                continue
+            started = d.get("State", {}).get("StartedAt", "")
+            started_epoch = self._docker_ts_epoch(started)
+            # In-window unless we have both a window and a start time that predates it.
+            in_window = since_epoch is None or started_epoch is None or started_epoch >= since_epoch
+            args = d.get("Args") or []
+            containers.append({
+                "name": (d.get("Name") or "").lstrip("/"),
+                "image": d.get("Config", {}).get("Image") or d.get("Image", ""),
+                "state": d.get("State", {}).get("Status", ""),
+                "command": " ".join([d.get("Path", "")] + args).strip(),
+                "host_mounts": [f"{s}:{dst}" for s, dst in mounts],
+                "privileged": privileged,
+                "host_namespaces": host_ns,
+                "escape_capable": True,
+                "reaches_objective": reaches,
+                "started_at": started,
+                "in_window": in_window,
+            })
+        # Only an in-window breakout is this episode's breach; a stale residue
+        # container is posture (SUSPICIOUS), not a win credit.
+        breach = any(c["reaches_objective"] and c["in_window"] for c in containers)
+        if breach:
+            assessment, rec = "BREACH", (
+                "A container can read the host objective via a bind mount — this is "
+                "a container-escape to root. Stop/kill the container and block the source."
+            )
+        elif containers:
+            assessment, rec = "SUSPICIOUS", (
+                "Escape-capable container(s) present (privileged / host namespace / "
+                "host bind mount). Review why and constrain them."
+            )
+        else:
+            assessment, rec = "CLEAN", "No escape-capable containers found."
+        return {
+            "tool": "investigate_docker",
+            "containers": containers,
+            "escape_capable_count": len(containers),
+            "flag_access_detected": breach,
+            "assessment": assessment,
+            "summary": (
+                f"Docker: {len(containers)} escape-capable container(s); "
+                f"{'HOST-OBJECTIVE REACHABLE (breakout)' if breach else 'none reach the objective'}."
+            ),
+            "recommendation": rec,
+        }
 
     # ------------------------------------------------------------------
     # Blue team response actions

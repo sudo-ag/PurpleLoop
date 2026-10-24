@@ -180,13 +180,14 @@ def test_mark_analysis_window_reads_target_wall_clock():
     # Two reads: the wall clock for the window, then $SSH_CONNECTION for blue's
     # own source IP.
     executor.execute = MagicMock(side_effect=[
-        "2026 Oct  8 22:22:16\n",
+        "2026 Oct  8 22:22:16|1760000000\n",
         "192.168.64.1 51000 192.168.64.12 22\n",
     ])
     executor.mark_analysis_window()
     assert executor._analysis_year == 2026
     assert executor.analysis_since == _syslog_line_epoch("Oct  8 22:22:16", 2026, None)
-    assert executor.execute.call_args_list[0].args[0] == 'date "+%Y %b %e %H:%M:%S"'
+    assert executor.analysis_since_epoch == 1760000000
+    assert executor.execute.call_args_list[0].args[0] == 'date "+%Y %b %e %H:%M:%S|%s"'
     assert executor.execute.call_args_list[1].args[0] == "echo $SSH_CONNECTION"
     assert executor.control_source_ip == "192.168.64.1"
 
