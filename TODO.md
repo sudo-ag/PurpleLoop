@@ -382,3 +382,45 @@ simulated scenarios, but keep intelligence/workflow transferable to any user-cho
 system (lessons are tradecraft, not box facts; facts are discovered, not baked).
 Phases: A juggernauts → 1 decouple (DONE) → 2 MCP → 3 generalize+authorize arbitrary
 targets → 4 multi-agent + real pentest/monitor engagements with a remediation report.
+
+---
+
+## Session 2026-10-23 — docker-breakout defense: blind → detect → PREVENT
+
+Closed last session's frontier (blue blind to the docker-group root read). 8
+commits on `master` (`9def7f3`..`b44eadc`), **unpushed**, 252 tests. All
+live-validated on `.12` with `gemma4:31b-cloud` in `--observe`.
+
+**Shipped (the blue docker-defense stack):**
+- 4-phase triage playbook (`MONITOR→TRIAGE→ATTRIBUTE→RESPOND`) + 5th **IDENTIFY**
+  phase — blue steering is an analyst flow, not blind tool rotation.
+- **`investigate_docker`** posture sensor (T1611): universal escape-posture
+  finding; breach credit derives from the injected `objective_path` (not baked),
+  so no orchestrator/scoring change. Window-bound + reset-pruned so stale residue
+  never false-credits.
+- **Daemon-log backstop**: catches a `--rm` breakout (gone from `ps -a`) via
+  `/var/log/upstart/docker.log` `source=/`.
+- **`revoke_escalation`**: strip a foothold account's docker/sudo groups
+  (reversible); + a **deterministic orchestrator reflex** that fires it the instant
+  the foothold is detected — the model couldn't be steered to win the 1-turn race,
+  so the revoke moved OUT of the model loop. Red's breakout → "permission denied".
+
+**Outcome:** blue detects (defends T3 via backstop) AND prevents (red capped at
+T1). The docker path is **converged / blue-favored** — more steering won't move it
+(both sides hit the model-compliance ceiling on the 1-turn reflex; blue only won
+deterministically).
+
+### Next steps (ranked)
+1. **Red new escalation vector — Dirty COW (CVE-2016-5195), DECIDED.** Kernel
+   `3.13.0-24`, gcc 4.8.4 on target. **Blocked on 3 prereqs** (see HANDOFF):
+   (a) VM snapshot of `.12` (hazardous live exploit — human action, in progress);
+   (b) guardrail-safe variant — `FORBIDDEN_KEYWORDS` blocks `passwd`/`shadow`, so
+   the classic passwd-append variant is self-blocked (use SUID-overwrite or relax
+   the dojo guard); (c) a coupled blue kernel-privesc/new-uid0/SUID-tamper sensor
+   + response (the "every vector needs a sensor" rule). Own-session arc.
+2. **Alt / easier vector:** writable root-owned `/opt/sinatra/` (service overwrite
+   → root) — revoke can't touch it; confirm root runs the service first.
+3. **Cleanup:** the model-driven IDENTIFY `revoke_escalation` is now redundant with
+   the reflex (harmless no-op) — could simplify the steering.
+4. **Backlog carried:** Slice 2 T2 exfil sensor (still inert); per-tier detection
+   rate metric (the `blue_detect_rate` vs "defended T1" wrinkle); push `master`.
