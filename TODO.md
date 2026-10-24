@@ -422,13 +422,19 @@ Linux box + blue auto-profiling → MCP → analytics → Windows far). Read the
 before the big phase decisions.
 
 ### Next steps (ranked)
-1. **Red new escalation vector — Dirty COW (CVE-2016-5195), DECIDED.** Kernel
-   `3.13.0-24`, gcc 4.8.4 on target. **Blocked on 3 prereqs** (see HANDOFF):
-   (a) VM snapshot of `.12` (hazardous live exploit — human action, in progress);
-   (b) guardrail-safe variant — `FORBIDDEN_KEYWORDS` blocks `passwd`/`shadow`, so
-   the classic passwd-append variant is self-blocked (use SUID-overwrite or relax
-   the dojo guard); (c) a coupled blue kernel-privesc/new-uid0/SUID-tamper sensor
-   + response (the "every vector needs a sensor" rule). Own-session arc.
+1. **Red new escalation vector — Dirty COW (CVE-2016-5195), PLANNED (resume here).**
+   Kernel `3.13.0-24`, gcc 4.8.4 on target. **Variant DECIDED: dojo-scoped
+   guardrail exception** — keep the classic `/etc/passwd`-append variant, add a
+   narrow `dojo_exploit_ok` flag so red/blue may touch `passwd`/`shadow` ON THE
+   DOJO ONLY (`rm -rf /`/`mkfs`/`dd`/`shutdown`/`reboot` stay blocked; default off).
+   **5-step plan (build 1–4 offline first; step 5 live & GATED on a confirmed `.12`
+   snapshot):** (1) the `dojo_exploit_ok` guardrail exception + tests; (2) coupled
+   blue `investigate_privileged_accounts()` — flag any uid=0 ≠ `root` + remove-rogue
+   response; (3) red Dirty COW doctrine (write PoC → `gcc -pthread` → run → `su
+   firefart` → flag, across per-call SSH); (4) scoring: DirtyCOW root → T3, rogue
+   uid=0 → T3 defense; (5) LIVE, restore `/etc/passwd` + remove `firefart` after.
+   Full detail + honest risks in `HANDOFF.md` "STOPPED HERE". **Snapshot not yet
+   confirmed taken — confirm before step 5.**
 2. **Alt / easier vector:** writable root-owned `/opt/sinatra/` (service overwrite
    → root) — revoke can't touch it; confirm root runs the service first.
 3. **Cleanup:** the model-driven IDENTIFY `revoke_escalation` is now redundant with
