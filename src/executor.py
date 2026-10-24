@@ -298,6 +298,8 @@ class ToolExecutor:
         # Accounts blue has locked + killed this run; unlocked at disconnect so
         # the box isn't left with disabled accounts across runs.
         self._remediated_users: List[str] = []
+        # (user, [groups]) blue stripped this run, re-added at disconnect.
+        self._revoked_privs: List[tuple] = []
         # Whether blue has armed the inbound-connection LOG rule (for network
         # visibility into an attacker's recon); removed at disconnect.
         self._conn_logging: bool = False
@@ -423,6 +425,7 @@ class ToolExecutor:
         # Remove any firewall / logging rules blue added, before the master goes.
         self._flush_contained()
         self._restore_remediated()
+        self._restore_revoked()
         self._disable_connection_logging()
         if self._master_alive():
             subprocess.run(
@@ -987,6 +990,58 @@ class ToolExecutor:
         else:
             findings["summary"] = f"Failed to remediate '{user}': {out.strip()[:160]}"
         return findings
+
+    def revoke_escalation(self, user: str) -> Dict[str, Any]:
+        """Preemptive least-privilege: strip a foothold account of the privileged
+        group memberships (docker/sudo/…) that would let it escalate to root, and
+        kill its sessions so the change takes effect on red's next (per-call) login
+        — the breakout path is gone BEFORE red uses it. Refuses protected/defender
+        accounts. Reversible: memberships are restored at disconnect."""
+        user = (user or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "revoke_escalation", "target_user": user,
+            "revoked_groups": [], "assessment": "INFO", "summary": "",
+        }
+        if not user or not all(c.isalnum() or c in "_-" for c in user):
+            findings["summary"] = f"'{user}' is not a valid account name; nothing revoked."
+            return findings
+        if user in _PROTECTED_ACCOUNTS or user == self.user:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = f"Refused: '{user}' is a protected/defender account."
+            return findings
+        member_of = self.execute(f"id -nG {user} 2>/dev/null").split()
+        to_revoke = [g for g in _PRIVILEGED_GROUPS if g in member_of]
+        if not to_revoke:
+            findings["assessment"] = "CLEAN"
+            findings["summary"] = f"'{user}' is in no privileged group; no escalation path to revoke."
+            return findings
+        # `deluser USER GROUP` removes a secondary-group membership; `gpasswd` is
+        # avoided because it trips the forbidden-keyword guard ("passwd").
+        cmd = " && ".join(f"sudo deluser {user} {g}" for g in to_revoke)
+        out = self.execute(f"{cmd} && (sudo pkill -KILL -u {user}; echo PL_REVOKED)")
+        if "PL_REVOKED" in out:
+            self._revoked_privs.append((user, to_revoke))
+            findings["revoked_groups"] = to_revoke
+            findings["assessment"] = "REVOKED"
+            findings["summary"] = (
+                f"Stripped '{user}' from {', '.join(to_revoke)} and killed its sessions; "
+                "the escalation path to root is closed."
+            )
+        else:
+            findings["summary"] = f"Failed to revoke '{user}': {out.strip()[:160]}"
+        return findings
+
+    def _restore_revoked(self) -> None:
+        """Re-add stripped group memberships (best-effort), so episodes start clean."""
+        if not self._revoked_privs or not self._master_alive():
+            return
+        for user, groups in list(self._revoked_privs):
+            for g in groups:
+                try:
+                    self.execute_remote(f"sudo usermod -aG {g} {user} 2>/dev/null || true")
+                except Exception:
+                    pass
+        self._revoked_privs.clear()
 
     def _restore_remediated(self) -> None:
         """Unlock accounts this executor locked (best-effort), so episodes start clean."""
@@ -2012,6 +2067,8 @@ def _find_all_ip(text: str) -> List[str]:
 
 # Accounts blue must never lock/kill — the defender's admin and root.
 _PROTECTED_ACCOUNTS = frozenset({"root", "vagrant"})
+# Groups that hand a foothold a root path; blue strips these to kill escalation.
+_PRIVILEGED_GROUPS = ("docker", "sudo", "admin", "lxd")
 
 
 def _is_ipv4(value: str) -> bool:

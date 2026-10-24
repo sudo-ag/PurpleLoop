@@ -37,6 +37,38 @@ def test_remediate_rejects_empty():
     assert _ex().remediate_account("")["remediated"] is False
 
 
+# --- revoke_escalation: strip the root path from a foothold account --------
+
+def test_revoke_refuses_defender_and_root():
+    assert _ex().revoke_escalation("vagrant")["assessment"] == "REFUSED"
+    assert _ex().revoke_escalation("root")["assessment"] == "REFUSED"
+
+
+def test_revoke_rejects_invalid_name():
+    assert _ex().revoke_escalation("x; rm -rf /")["revoked_groups"] == []
+
+
+def test_revoke_noop_when_account_in_no_privileged_group():
+    ex = _ex()
+    ex.execute = MagicMock(return_value="boba_fett users")  # id -nG: no docker/sudo
+    r = ex.revoke_escalation("boba_fett")
+    assert r["assessment"] == "CLEAN" and r["revoked_groups"] == []
+
+
+def test_revoke_strips_docker_group_and_records_for_restore():
+    ex = _ex()
+    ex.execute = MagicMock(side_effect=[
+        "boba_fett docker users",             # id -nG
+        "...\nPL_REVOKED",                    # gpasswd -d + pkill
+    ])
+    r = ex.revoke_escalation("boba_fett")
+    assert r["assessment"] == "REVOKED"
+    assert r["revoked_groups"] == ["docker"]
+    assert ("boba_fett", ["docker"]) in ex._revoked_privs
+    # the strip command targets the docker group
+    assert "deluser boba_fett docker" in ex.execute.call_args_list[1].args[0]
+
+
 # --- orchestrator detection + scoring --------------------------------------
 
 def test_check_blue_remediation_parses_success():

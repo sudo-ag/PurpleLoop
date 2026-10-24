@@ -473,6 +473,23 @@ class Agent:
                         },
                     },
                 },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'revoke_escalation',
+                        'description': "Preemptively strip a foothold account of the privileged group memberships (docker/sudo) that would let it escalate to root, and kill its sessions so the change applies to the attacker's next command. Call this the moment you identify a foothold account — it closes the container-escape / sudo path BEFORE the attacker uses it, even if you cannot yet see a breakout. Refuses privileged accounts (vagrant/root). Takes a user argument.",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'user': {
+                                    'type': 'string',
+                                    'description': 'The foothold account to strip of docker/sudo group access, e.g. "boba_fett".',
+                                },
+                            },
+                            'required': ['user'],
+                        },
+                    },
+                },
             ]
         else:
             self.tools = [
@@ -836,6 +853,16 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remediate_account", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'revoke_escalation':
+            # Live even in observe mode, like remediate_account: observe holds the
+            # network block, not the on-host least-privilege response.
+            user = tool_call['function']['arguments'].get('user', "")
+            try:
+                result = self.executor.revoke_escalation(user)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "revoke_escalation", "status": "error", "error": str(e), "target_user": user})
 
         return "Unsupported tool call."
 
@@ -1248,9 +1275,10 @@ class BlueAgent(Agent):
             account = self._attacker_account()
             return (
                 f"Blue guidance: {BLUE_TRIAGE_GUIDANCE['IDENTIFY']} Foothold on "
-                f"'{account}' from {ip}. Run `investigate_docker` now to check the "
-                f"container-escape path, and check whether '{account}' is in the "
-                f"docker or sudo group — that is how this foothold becomes root."
+                f"'{account}' from {ip}. PREEMPT the escalation NOW: call "
+                f"`revoke_escalation` user=\"{account}\" to strip its docker/sudo "
+                f"access before it breaks out. Then run `investigate_docker` to "
+                f"confirm whether a breakout already happened."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only
@@ -1260,18 +1288,18 @@ class BlueAgent(Agent):
             account = self._attacker_account()
             if account and self._escape_detected():
                 return (
-                    f"Blue guidance: CONTAINER ESCAPE confirmed — '{account}' from {ip} "
-                    f"can read the host as root via a docker breakout. Respond now: lock "
-                    f"the account with `remediate_account` user=\"{account}\" (stops new "
-                    f"breakout containers) AND cut the network with `contain_attacker` "
-                    f"ip=\"{ip}\". (Killing an already-running container needs a stronger "
-                    f"action than you have — do both of these now.)"
+                    f"Blue guidance: CONTAINER ESCAPE — '{account}' from {ip} reached root "
+                    f"via a docker breakout. Shut the path: `revoke_escalation` "
+                    f"user=\"{account}\" (strips docker/sudo so it cannot break out again), "
+                    f"`remediate_account` user=\"{account}\", and `contain_attacker` "
+                    f"ip=\"{ip}\"."
                 )
             if account:
                 return (
                     f"Blue guidance: Foothold confirmed on '{account}' from {ip}. Respond: "
-                    f"lock the account with `remediate_account` user=\"{account}\", and "
-                    f"contain the source with `contain_attacker` ip=\"{ip}\"."
+                    f"`revoke_escalation` user=\"{account}\" to strip any docker/sudo "
+                    f"escalation path, then `remediate_account` user=\"{account}\" and "
+                    f"`contain_attacker` ip=\"{ip}\"."
                 )
             return (
                 f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "

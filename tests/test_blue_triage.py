@@ -145,6 +145,14 @@ def test_identify_steers_to_investigate_docker():
     assert "boba_fett" in g
 
 
+def test_identify_preempts_with_revoke_escalation():
+    # The preemptive least-privilege move must be ordered at IDENTIFY, before a
+    # breakout is even detected.
+    blue = _foothold_blue()
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "revoke_escalation" in g and "boba_fett" in g
+
+
 def test_identify_fires_even_in_observe():
     # Observe holds the response, not the investigation — blue must still look.
     blue = _foothold_blue()
@@ -169,7 +177,8 @@ def test_respond_to_container_escape_locks_account_and_contains():
     assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "RESPOND"
     g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
     assert "CONTAINER ESCAPE" in g
-    assert "remediate_account" in g and "boba_fett" in g
+    assert "revoke_escalation" in g and "boba_fett" in g
+    assert "remediate_account" in g
     assert "contain_attacker" in g
 
 
