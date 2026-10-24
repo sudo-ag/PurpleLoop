@@ -69,6 +69,38 @@ def test_revoke_strips_docker_group_and_records_for_restore():
     assert "deluser boba_fett docker" in ex.execute.call_args_list[1].args[0]
 
 
+# --- auto-revoke reflex: strip escalation the instant the foothold is seen -
+
+def test_foothold_detection_auto_revokes_escalation():
+    o = _orch()
+    o.blue_agent.executor = MagicMock()
+    o.blue_agent.executor.revoke_escalation.return_value = {
+        "tool": "revoke_escalation", "assessment": "REVOKED", "revoked_groups": ["docker"]}
+    out = json.dumps({"tool": "investigate_logs", "suspicious_users": ["boba_fett"],
+                      "events": [{"event": "Successful authentication"}]})
+    o._auto_revoke_escalation(out)
+    o.blue_agent.executor.revoke_escalation.assert_called_once_with("boba_fett")
+    assert o.state.escalation_auto_revoked is True
+
+
+def test_auto_revoke_fires_only_once():
+    o = _orch()
+    o.blue_agent.executor = MagicMock()
+    o.blue_agent.executor.revoke_escalation.return_value = {}
+    out = json.dumps({"suspicious_users": ["boba_fett"]})
+    o._auto_revoke_escalation(out)
+    o._auto_revoke_escalation(out)
+    assert o.blue_agent.executor.revoke_escalation.call_count == 1
+
+
+def test_auto_revoke_noop_without_a_user():
+    o = _orch()
+    o.blue_agent.executor = MagicMock()
+    o._auto_revoke_escalation(json.dumps({"suspicious_users": []}))
+    o.blue_agent.executor.revoke_escalation.assert_not_called()
+    assert o.state.escalation_auto_revoked is False
+
+
 # --- orchestrator detection + scoring --------------------------------------
 
 def test_check_blue_remediation_parses_success():

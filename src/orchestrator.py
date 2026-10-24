@@ -95,6 +95,7 @@ class SimulationState:
     red_tiers: Dict[int, int] = field(default_factory=dict)        # tier -> turn red first reached it
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
+    escalation_auto_revoked: bool = False  # blue's reflex stripped the foothold account's escalation path
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
 
 class Orchestrator:
@@ -238,6 +239,36 @@ class Orchestrator:
             self.state.blue_remediate_turn = self.state.turn
             self.state.remediated_user = user
             self._notify_dashboard("blue_remediation", {"turn": self.state.turn, "user": user})
+
+    def _auto_revoke_escalation(self, detect_output: str) -> None:
+        """Blue's deterministic reflex: strip the foothold account's escalation
+        path (docker/sudo) the moment the foothold is detected, outside the model
+        loop — an EDR-style auto-isolate. Fires once; the account is read from
+        blue's own detection output (`suspicious_users`). Runs even in observe
+        (on-host least-privilege, not a network block); no-ops on executors that
+        lack the action (mock)."""
+        if self.state.escalation_auto_revoked:
+            return
+        ex = getattr(self.blue_agent, "executor", None)
+        if ex is None or not hasattr(ex, "revoke_escalation"):
+            return
+        try:
+            users = [u for u in (json.loads(detect_output).get("suspicious_users") or []) if u]
+        except Exception:
+            users = []
+        if not users:
+            return
+        user = users[0]
+        result = ex.revoke_escalation(user)
+        self.state.escalation_auto_revoked = True
+        self.state.history.append({
+            "role": "blue", "turn": self.state.turn,
+            "tool": {"function": {"name": "revoke_escalation",
+                                  "arguments": {"user": user}}, "auto": True},
+            "output": json.dumps(result),
+        })
+        self._notify_dashboard("battle_log",
+                               {"tool": "auto revoke_escalation", "output": json.dumps(result)})
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
@@ -409,6 +440,11 @@ class Orchestrator:
                     if role == "blue" and TIER_FOOTHOLD not in self.state.blue_tier_detect \
                             and self._check_blue_foothold_detect(output):
                         self.state.blue_tier_detect[TIER_FOOTHOLD] = self.state.turn
+                        # Reflex: the instant blue's foothold alert fires, strip the
+                        # account's escalation path — synchronously, before control
+                        # returns to red, so the docker/sudo breakout one command away
+                        # is denied. The model is too slow/unreliable to win this race.
+                        self._auto_revoke_escalation(output)
                     if role == "blue" and self.state.blue_detect_turn is None \
                             and self._check_blue_victory(output):
                         self.state.blue_detect_turn = self.state.turn
