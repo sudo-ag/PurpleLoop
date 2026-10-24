@@ -1085,15 +1085,23 @@ BLUE_TRIAGE_GUIDANCE = {
         "the compromised account and technique from your findings, then stage "
         "the response."
     ),
+    "IDENTIFY": (
+        "IDENTIFY — a foothold has landed; before responding, determine HOW this "
+        "account can become root. The loudest path on this host is a docker-group "
+        "breakout, which leaves NO sudo/auth-log trace — `investigate_docker` is "
+        "the only sensor that sees it."
+    ),
 }
 
 
 class BlueAgent(Agent):
-    """Blue defender with its role fixed, following a 4-phase triage playbook
-    computed from its OWN history: MONITOR (logs-heartbeat + breadth rotation)
-    -> TRIAGE (corroborate an unconfirmed lead) -> ATTRIBUTE (pin source +
-    account on a confirmed attacker) -> RESPOND (contain). Game facts (observe
-    mode, confirmed attackers, whether already contained) are passed in."""
+    """Blue defender with its role fixed, following a triage playbook computed
+    from its OWN history: MONITOR (logs-heartbeat + breadth rotation) -> TRIAGE
+    (corroborate an unconfirmed lead) -> ATTRIBUTE (document a confirmed attacker
+    when response is held) -> IDENTIFY (on a landed foothold, check the
+    escalation surface — docker/sudo — via investigate_docker) -> RESPOND
+    (act, branching on the identified technique). Game facts (observe mode,
+    confirmed attackers, whether already contained) are passed in."""
 
     def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
         super().__init__(role="blue", executor=executor, model=model, **kw)
@@ -1181,11 +1189,50 @@ class BlueAgent(Agent):
                     return True
         return False
 
+    def _attacker_account(self) -> Optional[str]:
+        """The compromised user blue has seen in its auth log (a landed foothold),
+        or None. The presence of an account is what distinguishes a foothold from a
+        recon-only port scan."""
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("tool") == "investigate_logs":
+                users = data.get("suspicious_users") or []
+                if users:
+                    return users[0]
+        return None
+
+    def _ran_escalation_check(self) -> bool:
+        return "investigate_docker" in self._tools_used()
+
+    def _escape_detected(self) -> bool:
+        """True if blue's docker posture check found an escape-capable container."""
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("tool") == "investigate_docker":
+                if data.get("flag_access_detected") or (data.get("escape_capable_count") or 0) > 0:
+                    return True
+        return False
+
     def triage_phase(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
         if confirmed_attackers:
+            # A landed foothold (a compromised account) must be IDENTIFIED — check
+            # the escalation surface (docker/sudo) — before responding; a recon-only
+            # port scan skips straight to a fast contain.
+            if self._attacker_account() and not self._ran_escalation_check():
+                return "IDENTIFY"
             if not observe and not contained:
                 return "RESPOND"
-            return "ATTRIBUTE"          # confirmed but held (observe) or already contained
+            return "ATTRIBUTE"          # held (observe) or already contained: document
         if self._has_lead():
             return "TRIAGE"
         return "MONITOR"
@@ -1193,10 +1240,39 @@ class BlueAgent(Agent):
     def tool_guidance(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
         phase = self.triage_phase(observe, confirmed_attackers, contained)
 
-        # RESPOND — EVIDENCE of malice and able to act: a direct containment order,
-        # since the model otherwise narrates the finding instead of acting.
+        # IDENTIFY — a foothold landed: determine HOW the account can escalate
+        # (docker/sudo) before responding. This is what makes blue run the posture
+        # sensor; without it the docker-breakout path is never even looked at.
+        if phase == "IDENTIFY":
+            ip = confirmed_attackers[0]
+            account = self._attacker_account()
+            return (
+                f"Blue guidance: {BLUE_TRIAGE_GUIDANCE['IDENTIFY']} Foothold on "
+                f"'{account}' from {ip}. Run `investigate_docker` now to check the "
+                f"container-escape path, and check whether '{account}' is in the "
+                f"docker or sudo group — that is how this foothold becomes root."
+            )
+
+        # RESPOND — act, branching on the identified technique (we are here only
+        # when able to act: not observe, not already contained).
         if phase == "RESPOND":
             ip = confirmed_attackers[0]
+            account = self._attacker_account()
+            if account and self._escape_detected():
+                return (
+                    f"Blue guidance: CONTAINER ESCAPE confirmed — '{account}' from {ip} "
+                    f"can read the host as root via a docker breakout. Respond now: lock "
+                    f"the account with `remediate_account` user=\"{account}\" (stops new "
+                    f"breakout containers) AND cut the network with `contain_attacker` "
+                    f"ip=\"{ip}\". (Killing an already-running container needs a stronger "
+                    f"action than you have — do both of these now.)"
+                )
+            if account:
+                return (
+                    f"Blue guidance: Foothold confirmed on '{account}' from {ip}. Respond: "
+                    f"lock the account with `remediate_account` user=\"{account}\", and "
+                    f"contain the source with `contain_attacker` ip=\"{ip}\"."
+                )
             return (
                 f"Blue guidance: You have EVIDENCE of an attack from {ip} (a port "
                 f"scan, brute-force, or confirmed access — not just a connection). "

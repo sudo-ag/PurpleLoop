@@ -29,6 +29,29 @@ def _logs(**fields: object) -> str:
     return json.dumps({"tool": "investigate_logs", **fields})
 
 
+def _foothold_blue() -> BlueAgent:
+    """Blue that has already seen a port scan (confirmed attacker) AND a foothold
+    login for user boba_fett — i.e. an attributed, landed intrusion."""
+    import json
+    blue = _blue()
+    blue.history = [
+        Turn(0, "", {"function": {"name": "investigate_connections", "arguments": {}}},
+             _conn(port_scanners=["192.168.64.11"], suspicious_ips=["192.168.64.11"])),
+        Turn(1, "", {"function": {"name": "investigate_logs", "arguments": {}}},
+             _logs(failed_attempts=0, suspicious_ips=["192.168.64.11"],
+                   suspicious_users=["boba_fett"])),
+    ]
+    return blue
+
+
+def _docker_turn(escape: bool) -> Turn:
+    import json
+    out = {"tool": "investigate_docker",
+           "escape_capable_count": 1 if escape else 0,
+           "flag_access_detected": escape}
+    return Turn(2, "", {"function": {"name": "investigate_docker", "arguments": {}}}, json.dumps(out))
+
+
 # --- phase selection -------------------------------------------------------
 
 def test_quiet_history_is_monitor():
@@ -106,3 +129,53 @@ def test_triage_doctrine_notes_docker_posture_slot():
                          _conn(foreign_ips=["192.168.64.11"], port_scanners=[], suspicious_ips=[]))]
     g = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
     assert "investigate_docker" in g
+
+
+# --- IDENTIFY: a landed foothold triggers the escalation-surface check -----
+
+def test_foothold_without_docker_check_is_identify():
+    blue = _foothold_blue()
+    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "IDENTIFY"
+
+
+def test_identify_steers_to_investigate_docker():
+    blue = _foothold_blue()
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "investigate_docker" in g
+    assert "boba_fett" in g
+
+
+def test_identify_fires_even_in_observe():
+    # Observe holds the response, not the investigation — blue must still look.
+    blue = _foothold_blue()
+    assert blue.triage_phase(observe=True, confirmed_attackers=["192.168.64.11"], contained=False) == "IDENTIFY"
+
+
+def test_recon_only_scan_skips_identify_and_contains_fast():
+    # A port scan with NO foothold account must still contain immediately.
+    blue = _blue()
+    blue.history = [Turn(0, "", {"function": {"name": "investigate_connections", "arguments": {}}},
+                         _conn(port_scanners=["192.168.64.11"], suspicious_ips=["192.168.64.11"]))]
+    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "RESPOND"
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "contain_attacker" in g
+
+
+# --- RESPOND branches on the identified technique -------------------------
+
+def test_respond_to_container_escape_locks_account_and_contains():
+    blue = _foothold_blue()
+    blue.history.append(_docker_turn(escape=True))
+    assert blue.triage_phase(observe=False, confirmed_attackers=["192.168.64.11"], contained=False) == "RESPOND"
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "CONTAINER ESCAPE" in g
+    assert "remediate_account" in g and "boba_fett" in g
+    assert "contain_attacker" in g
+
+
+def test_respond_to_plain_foothold_remediates_account():
+    blue = _foothold_blue()
+    blue.history.append(_docker_turn(escape=False))  # checked, no escape found
+    g = blue.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "CONTAINER ESCAPE" not in g
+    assert "remediate_account" in g and "boba_fett" in g
