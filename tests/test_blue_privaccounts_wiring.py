@@ -45,3 +45,10 @@ def test_remove_runs_plain_deluser() -> None:
     assert ex.remove_privileged_account("firefart")["removed"]
     cmd = ex.execute.call_args[0][0]
     assert "deluser firefart" in cmd and "--remove-home" not in cmd
+
+
+def test_leading_dash_refused() -> None:
+    ex = _executor()
+    assert ex.remove_privileged_account("--remove-home")["assessment"] == "REFUSED"
+    assert ex.revoke_escalation("--anything")["assessment"] == "REFUSED"
+    ex.execute.assert_not_called()

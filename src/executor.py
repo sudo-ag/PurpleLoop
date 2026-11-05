@@ -1062,9 +1062,10 @@ class ToolExecutor:
         if not user or not all(c.isalnum() or c in "_-" for c in user):
             findings["summary"] = f"'{user}' is not a valid account name; nothing revoked."
             return findings
-        if user in _PROTECTED_ACCOUNTS or user == self.user:
+        # leading "-" would be parsed by deluser as an option (e.g. --remove-home)
+        if user in _PROTECTED_ACCOUNTS or user == self.user or user.startswith("-"):
             findings["assessment"] = "REFUSED"
-            findings["summary"] = f"Refused: '{user}' is a protected/defender account."
+            findings["summary"] = f"Refused: '{user}' is a protected/defender account or an option-like name."
             return findings
         member_of = self.execute(f"id -nG {user} 2>/dev/null").split()
         to_revoke = [g for g in _PRIVILEGED_GROUPS if g in member_of]
@@ -1101,9 +1102,10 @@ class ToolExecutor:
         if not user or not all(c.isalnum() or c in "_-" for c in user):
             findings["summary"] = f"'{user}' is not a valid account name; nothing removed."
             return findings
-        if user in _PROTECTED_ACCOUNTS or user == self.user:
+        # leading "-" would be parsed by deluser as an option (e.g. --remove-home)
+        if user in _PROTECTED_ACCOUNTS or user == self.user or user.startswith("-"):
             findings["assessment"] = "REFUSED"
-            findings["summary"] = f"Refused: '{user}' is a protected/defender account."
+            findings["summary"] = f"Refused: '{user}' is a protected/defender account or an option-like name."
             return findings
         out = self.execute(f"sudo deluser {user} && echo PL_REMOVED")
         if "PL_REMOVED" in out:
