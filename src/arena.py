@@ -213,9 +213,17 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     # from it whenever either symptom shows up — this undoes both failure modes,
     # not just the added line. Runs over the dojo_exploit_ok-gated blue_ex, since
     # it names /etc/passwd.
+    #
+    # The baseline is captured exactly once, so it must be captured CLEAN: if a
+    # rogue non-root uid=0 account already exists at first-ever reset (e.g. an
+    # interrupted prior run), remove it FIRST (plain deluser, no --remove-home,
+    # same as Task 3's remove_privileged_account) — otherwise it gets baked into
+    # the "clean" baseline and every future restore re-installs it forever.
     blue_ex.execute(
         "sudo test -f /etc/passwd.purpleloop-baseline || "
-        "sudo cp /etc/passwd /etc/passwd.purpleloop-baseline 2>/dev/null; true"
+        "{ for u in $(sudo awk -F: '$1!=\"root\" && $3==0{print $1}' /etc/passwd); "
+        "do sudo deluser \"$u\" 2>/dev/null; done; "
+        "sudo cp /etc/passwd /etc/passwd.purpleloop-baseline 2>/dev/null; }; true"
     )
     blue_ex.execute(
         "(sudo awk -F: '$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "

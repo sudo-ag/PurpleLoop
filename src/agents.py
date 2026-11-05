@@ -273,9 +273,11 @@ be vulnerable to Dirty COW. Do NOT assume it's there — discover it from the bo
 Your shell state does NOT persist between calls over SSH, so do each of the
 following as a SEPARATE `execute_command` call, writing to and reading from disk
 rather than relying on cwd or env vars carrying over:
-1. BACK UP the line you are about to overwrite, BEFORE touching anything.
-   Dirty COW does not append — it overwrites existing bytes in place — so you
-   need the original bytes on record in case the race misfires:
+1. BACK UP the target file to DISK, BEFORE touching anything. Dirty COW does
+   not append — it overwrites existing bytes in place — so you need a real,
+   on-disk copy to recover from if the race misfires (a transcript print
+   alone is not a backup):
+   sudo cp /etc/passwd /tmp/passwd.bak
    grep '^root:' /etc/passwd
 2. Write the canonical "firefart" PoC source to disk (standard public
    dirtyc0w.c technique): mmap the target file read-only+private, then race
@@ -350,15 +352,21 @@ rather than relying on cwd or env vars carrying over:
 4. Run the exploit. CRITICAL: Dirty COW overwrites bytes in place — it CANNOT
    grow the file — so your replacement must be EXACTLY as many bytes as the
    line you are overwriting, including the trailing newline, or you corrupt
-   whatever follows it. Use an EMPTY password field (no shadow entry needed)
-   and pad the GECOS/comment field with filler characters to absorb the length
-   difference from a longer username. Example: the standard
-   `root:x:0:0:root:/root:/bin/bash\\n` line is 32 bytes; swapping in a
-   `firefart` account with an empty password and a 1-byte comment —
-   `firefart::0:0:p:/root:/bin/bash\\n` — is ALSO exactly 32 bytes. Measure
-   YOUR target line's actual length (from step 1) before assuming this exact
-   padding applies to your box. Use `$'...\\n'` (ANSI-C quoting) so the
-   argument carries a REAL newline:
+   whatever follows it. MEASURE your actual target line's length yourself —
+   never assume a fixed byte count, it is a fact about the box you must
+   discover, not a given:
+   grep '^root:' /etc/passwd | wc -c
+   Use an EMPTY password field (no shadow entry needed) and pad the
+   GECOS/comment field with filler characters to absorb the length difference
+   from a longer username, so the total matches YOUR measured length exactly.
+   Illustration only, NOT a fact about your box (your measured length may
+   differ): IF your root line measured 32 bytes
+   (`root:x:0:0:root:/root:/bin/bash\\n`), swapping in a `firefart` account
+   with an empty password and a 1-byte comment —
+   `firefart::0:0:p:/root:/bin/bash\\n` — is also exactly 32 bytes; it is the
+   padding TECHNIQUE, applied to your own measured length, that matters, not
+   this specific number. Use `$'...\\n'` (ANSI-C quoting) so the argument
+   carries a REAL newline:
    /tmp/dc /etc/passwd $'firefart::0:0:p:/root:/bin/bash\\n'
 5. VERIFY the rogue account actually exists at uid 0 — this verification, not a
    login, IS your proof of root-equivalent compromise (your SSH session has no

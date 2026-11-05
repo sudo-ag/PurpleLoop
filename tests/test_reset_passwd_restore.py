@@ -11,9 +11,13 @@ def test_scripted_reset_backs_up_baseline_and_conditionally_restores():
     cmds = [c.args[0] for c in blue.execute.call_args_list]
     joined = " ".join(cmds)
 
-    # Baseline is created once (only if it doesn't already exist).
+    # Baseline is created once (only if it doesn't already exist), but ONLY
+    # after clearing any pre-existing rogue uid0 account first — otherwise a
+    # leftover rogue account from an interrupted prior run gets baked into
+    # the "clean" baseline forever (Important 1).
     assert any(
         "test -f /etc/passwd.purpleloop-baseline" in c
+        and "deluser" in c
         and "cp /etc/passwd /etc/passwd.purpleloop-baseline" in c
         for c in cmds
     )
