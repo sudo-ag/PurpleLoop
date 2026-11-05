@@ -250,21 +250,31 @@ class ToolExecutor:
         "/etc/passwd"
     ]
 
+    # Dojo-exempt keywords: unblocked only when dojo_exploit_ok=True, and only
+    # on the dojo target executors. Everything else in FORBIDDEN_KEYWORDS stays
+    # blocked unconditionally, flag or no flag.
+    DOJO_EXEMPT_KEYWORDS: frozenset[str] = frozenset({"passwd", "/etc/shadow", "/etc/passwd"})
+
     def __init__(
         self,
         host: str,
-        user: str,
-        pwd: str,
+        user: str = "",
+        pwd: str = "",
         timeout: int = 60,
         jump_host: Optional[str] = None,
         jump_user: Optional[str] = None,
         jump_pwd: Optional[str] = None,
         require_foothold: bool = False,
+        dojo_exploit_ok: bool = False,
     ):
         self.host = host
         self.user = user
         self.pwd = pwd
         self.timeout = timeout
+        # Narrow, dojo-scoped exception: when True, passwd/shadow keywords are
+        # exempt from FORBIDDEN_KEYWORDS. Destructive keywords stay blocked
+        # regardless. Only set on target executors for a real (non-mock) host.
+        self.dojo_exploit_ok = dojo_exploit_ok
         # Earned foothold: when True the executor has NO working target cred yet —
         # target commands are refused until a cred is proven via set_target_credential
         # (red cracks it and calls use_credential). Blue and handed-red leave this False.
@@ -449,6 +459,8 @@ class ToolExecutor:
 
     def _check_forbidden(self, command: str, scope: str) -> None:
         for keyword in self.FORBIDDEN_KEYWORDS:
+            if self.dojo_exploit_ok and keyword in self.DOJO_EXEMPT_KEYWORDS:
+                continue
             if keyword in command:
                 logger.warning(f"Blocked forbidden {scope} command: {command}")
                 raise ValueError(f"Forbidden command: {keyword} detected.")

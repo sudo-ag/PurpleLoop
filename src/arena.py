@@ -228,7 +228,7 @@ def build_agents(
         red_ex: Any = MockExecutor()
         blue_ex: Any = red_ex
     else:
-        blue_ex = ToolExecutor(host=host, user=user, pwd=pwd)
+        blue_ex = ToolExecutor(host=host, user=user, pwd=pwd, dojo_exploit_ok=(host != "mock"))
         if jump_host:
             # Earned red starts with NO target credential — it must crack one and
             # prove it via use_credential; handed red keeps the configured cred.
@@ -238,6 +238,7 @@ def build_agents(
                 pwd="" if earned else pwd,
                 jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
                 require_foothold=earned,
+                dojo_exploit_ok=(host != "mock"),
             )
             if earned:
                 attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
