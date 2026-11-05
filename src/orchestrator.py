@@ -96,6 +96,7 @@ class SimulationState:
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
     escalation_auto_revoked: bool = False  # blue's reflex stripped the foothold account's escalation path
+    rogue_removed: bool = False  # blue's reflex stripped the rogue uid-0 account
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
 
 class Orchestrator:
@@ -269,6 +270,33 @@ class Orchestrator:
         })
         self._notify_dashboard("battle_log",
                                {"tool": "auto revoke_escalation", "output": json.dumps(result)})
+
+    def _auto_remove_rogue(self, detect_output: str) -> None:
+        """Blue's deterministic reflex: delete the rogue uid-0 account named in
+        its own BREACH output (`suspicious_users`) the moment it is detected.
+        Fires once; runs even in observe; no-ops on executors lacking the action."""
+        if self.state.rogue_removed:
+            return
+        ex = getattr(self.blue_agent, "executor", None)
+        if ex is None or not hasattr(ex, "remove_privileged_account"):
+            return
+        try:
+            users = [u for u in (json.loads(detect_output).get("suspicious_users") or []) if u]
+        except Exception:
+            users = []
+        if not users:
+            return
+        user = users[0]
+        result = ex.remove_privileged_account(user)
+        self.state.rogue_removed = True
+        self.state.history.append({
+            "role": "blue", "turn": self.state.turn,
+            "tool": {"function": {"name": "remove_privileged_account",
+                                  "arguments": {"user": user}}, "auto": True},
+            "output": json.dumps(result),
+        })
+        self._notify_dashboard("battle_log",
+                               {"tool": "auto remove_privileged_account", "output": json.dumps(result)})
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
@@ -445,6 +473,10 @@ class Orchestrator:
                         # returns to red, so the docker/sudo breakout one command away
                         # is denied. The model is too slow/unreliable to win this race.
                         self._auto_revoke_escalation(output)
+                    if role == "blue" \
+                            and tool_call.get("function", {}).get("name") == "investigate_privileged_accounts" \
+                            and self._check_blue_victory(output):
+                        self._auto_remove_rogue(output)
                     if role == "blue" and self.state.blue_detect_turn is None \
                             and self._check_blue_victory(output):
                         self.state.blue_detect_turn = self.state.turn
