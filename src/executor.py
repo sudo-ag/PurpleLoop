@@ -254,12 +254,14 @@ class ToolExecutor:
     # on the dojo target executors. Everything else in FORBIDDEN_KEYWORDS stays
     # blocked unconditionally, flag or no flag.
     DOJO_EXEMPT_KEYWORDS: frozenset[str] = frozenset({"passwd", "/etc/shadow", "/etc/passwd"})
+    # Catches a stale exempt entry if FORBIDDEN_KEYWORDS is edited later.
+    assert DOJO_EXEMPT_KEYWORDS <= set(FORBIDDEN_KEYWORDS)
 
     def __init__(
         self,
         host: str,
-        user: str = "",
-        pwd: str = "",
+        user: str,
+        pwd: str,
         timeout: int = 60,
         jump_host: Optional[str] = None,
         jump_user: Optional[str] = None,
