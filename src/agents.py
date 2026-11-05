@@ -442,6 +442,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_privileged_accounts',
+                        'description': 'Check /etc/passwd for rogue uid=0 accounts (MITRE T1136.001 / T1068): a second root-equivalent user added by a kernel exploit such as Dirty COW leaves no sudo or auth-log trace. Returns uid-0 accounts beyond root; any extra one is a compromise artifact.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'contain_attacker',
                         'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
                         'parameters': {
@@ -828,6 +836,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_docker", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_privileged_accounts':
+            try:
+                return json.dumps(self.executor.investigate_privileged_accounts())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_privileged_accounts", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")
             if self.observe:
@@ -1083,6 +1097,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_file_access",
     "investigate_processes",
     "investigate_docker",
+    "investigate_privileged_accounts",
     "investigate_users",
     "investigate_cron",
     "investigate_network",

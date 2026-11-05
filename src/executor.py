@@ -1088,6 +1088,32 @@ class ToolExecutor:
             findings["summary"] = f"Failed to revoke '{user}': {out.strip()[:160]}"
         return findings
 
+    def remove_privileged_account(self, user: str) -> Dict[str, Any]:
+        """Delete a rogue root-equivalent account (e.g. Dirty COW's firefart).
+        Plain `deluser`, never --remove-home: such accounts often have home
+        /root, which would destroy root's home and the objective. Permanent, so
+        no disconnect-time reversal. Refuses protected/defender accounts."""
+        user = (user or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "remove_privileged_account", "target_user": user,
+            "removed": False, "assessment": "INFO", "summary": "",
+        }
+        if not user or not all(c.isalnum() or c in "_-" for c in user):
+            findings["summary"] = f"'{user}' is not a valid account name; nothing removed."
+            return findings
+        if user in _PROTECTED_ACCOUNTS or user == self.user:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = f"Refused: '{user}' is a protected/defender account."
+            return findings
+        out = self.execute(f"sudo deluser {user} && echo PL_REMOVED")
+        if "PL_REMOVED" in out:
+            findings["removed"] = True
+            findings["assessment"] = "REMOVED"
+            findings["summary"] = f"Account '{user}' removed (home directory left intact)."
+        else:
+            findings["summary"] = f"Failed to remove '{user}': {out.strip()[:160]}"
+        return findings
+
     def _restore_revoked(self) -> None:
         """Re-add stripped group memberships (best-effort), so episodes start clean."""
         if not self._revoked_privs or not self._master_alive():
