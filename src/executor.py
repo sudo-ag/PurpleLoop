@@ -647,7 +647,14 @@ class ToolExecutor:
         else:
             logger.info("Blue analysis window starts at target wall clock %s.", out)
         self._detect_control_source_ip()
-        self._uid0_baseline = self._uid0_accounts()
+        self._uid0_baseline = None
+        if self.dojo_exploit_ok:  # passwd read is guard-blocked outside the dojo
+            try:
+                uid0 = self._uid0_accounts()
+            except Exception:
+                uid0 = set()
+            # 'root' present = proof the read worked; else no trustworthy baseline.
+            self._uid0_baseline = uid0 if "root" in uid0 else None
 
     @staticmethod
     def _parse_uid0(passwd: str) -> set:
@@ -662,14 +669,25 @@ class ToolExecutor:
         appending a uid-0 user to /etc/passwd). Window-bound: only a uid-0 name
         absent from the baseline captured at mark_analysis_window is a breach; a
         pre-existing uid-0 account is never credited."""
-        rogue = sorted(self._uid0_accounts() - (self._uid0_baseline or {"root"}))
-        return {
+        out: Dict[str, Any] = {
             "tool": "investigate_privileged_accounts",
-            "rogue_accounts": rogue,
-            "suspicious_users": rogue,
-            "flag_access_detected": bool(rogue),
-            "assessment": "BREACH" if rogue else "CLEAN",
+            "rogue_accounts": [],
+            "suspicious_users": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
         }
+        # Never score without a trustworthy baseline or a successful live read.
+        if self._uid0_baseline is None or not self.dojo_exploit_ok:
+            out["baseline_unavailable"] = True
+            return out
+        live = self._uid0_accounts()
+        if "root" not in live:
+            return out
+        rogue = sorted(live - self._uid0_baseline)
+        if rogue:
+            out.update(rogue_accounts=rogue, suspicious_users=rogue,
+                       flag_access_detected=True, assessment="BREACH")
+        return out
 
     def _detect_control_source_ip(self) -> None:
         """Record the source IP of blue's own control session on the target, so

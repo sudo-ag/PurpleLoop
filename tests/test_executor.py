@@ -175,10 +175,10 @@ def test_connect_raises_when_master_never_comes_up():
 def test_mark_analysis_window_reads_target_wall_clock():
     from src.executor import _syslog_line_epoch
     executor = _executor()
+    executor.dojo_exploit_ok = True  # baseline capture (3rd read) is gated on this
     # Target wall clock as syslog-style text, parsed in the same frame as log
     # lines so a controller/target timezone gap can't skew the window.
-    # Two reads: the wall clock for the window, then $SSH_CONNECTION for blue's
-    # own source IP.
+    # Three reads: wall clock, $SSH_CONNECTION, then the uid0 baseline.
     executor.execute = MagicMock(side_effect=[
         "2026 Oct  8 22:22:16|1760000000\n",
         "192.168.64.1 51000 192.168.64.12 22\n",

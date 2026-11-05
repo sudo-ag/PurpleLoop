@@ -6,7 +6,7 @@ PASSWD_ROGUE = PASSWD_CLEAN + "firefart:x:0:0:pwned:/root:/bin/bash\n"
 
 
 def _ex_returning(passwd: str) -> ToolExecutor:
-    ex = ToolExecutor(host="mock", user="u", pwd="p")  # __init__ does not connect
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=True)  # __init__ does not connect
     ex.execute = lambda cmd, *a, **k: passwd  # type: ignore[method-assign]
     return ex
 
@@ -29,3 +29,38 @@ def test_preexisting_uid0_not_credited():
     ex = _ex_returning(PASSWD_ROGUE); ex._uid0_baseline = {"root", "firefart"}
     r = ex.investigate_privileged_accounts()
     assert r["rogue_accounts"] == [] and r["flag_access_detected"] is False
+
+
+def test_non_dojo_mark_window_does_not_read_passwd():
+    from unittest.mock import MagicMock
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=False)
+
+    def fake_execute(cmd, *a, **k):
+        assert "passwd" not in cmd, "passwd read must be gated on dojo_exploit_ok"
+        if "date" in cmd:
+            return "2026 Oct  8 22:22:16|1760000000\n"
+        return "192.168.64.1 51000 192.168.64.12 22\n"
+
+    ex.execute = MagicMock(side_effect=fake_execute)
+    ex.mark_analysis_window()  # must not raise
+    assert ex._uid0_baseline is None
+
+
+def test_non_dojo_real_guard_blocks_passwd():
+    import pytest
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=False)
+    with pytest.raises(ValueError):
+        ex._check_forbidden("cat /etc/passwd", "remote")
+
+
+def test_no_baseline_is_clean_and_flagged_unavailable():
+    ex = _ex_returning(PASSWD_ROGUE)
+    r = ex.investigate_privileged_accounts()
+    assert r["assessment"] == "CLEAN" and r["baseline_unavailable"] is True
+    assert r["flag_access_detected"] is False
+
+
+def test_live_read_without_root_is_clean():
+    ex = _ex_returning("garbage\n"); ex._uid0_baseline = {"root"}
+    r = ex.investigate_privileged_accounts()
+    assert r["assessment"] == "CLEAN" and r["rogue_accounts"] == []
