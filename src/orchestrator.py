@@ -286,17 +286,23 @@ class Orchestrator:
             users = []
         if not users:
             return
-        user = users[0]
-        result = ex.remove_privileged_account(user)
-        self.state.rogue_removed = True
-        self.state.history.append({
-            "role": "blue", "turn": self.state.turn,
-            "tool": {"function": {"name": "remove_privileged_account",
-                                  "arguments": {"user": user}}, "auto": True},
-            "output": json.dumps(result),
-        })
-        self._notify_dashboard("battle_log",
-                               {"tool": "auto remove_privileged_account", "output": json.dumps(result)})
+        all_ok = True
+        for user in users:
+            try:
+                result = ex.remove_privileged_account(user)
+            except Exception as e:  # SSH/deluser error must not crash the episode
+                result = {"removed": False, "error": str(e)}
+            all_ok = all_ok and bool(result.get("removed"))
+            self.state.history.append({
+                "role": "blue", "turn": self.state.turn,
+                "tool": {"function": {"name": "remove_privileged_account",
+                                      "arguments": {"user": user}}, "auto": True},
+                "output": json.dumps(result),
+            })
+            self._notify_dashboard("battle_log",
+                                   {"tool": "auto remove_privileged_account", "output": json.dumps(result)})
+        # Only latch once every rogue is verified gone; otherwise retry next detection.
+        self.state.rogue_removed = all_ok
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
