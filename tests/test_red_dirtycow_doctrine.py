@@ -23,9 +23,13 @@ def test_redagent_earned_prompt_includes_dirtycow_doctrine():
     assert "su firefart" not in prompt
     assert "cat /root/flag.txt" not in prompt.split("KERNEL EXPLOIT")[-1]
     # Must back up the original line BEFORE overwriting it in place — a real,
-    # on-disk copy, not just a transcript print (Important 3).
+    # on-disk copy, not just a transcript print (Important 3). No sudo: this
+    # whole doctrine is the fallback for an account WITHOUT sudo, so a `sudo
+    # cp` would fail or hang on a password prompt at the safety step itself;
+    # /etc/passwd is world-readable so a plain cp needs no privilege.
     assert "grep '^root:' /etc/passwd" in prompt
-    assert "sudo cp /etc/passwd /tmp/passwd.bak" in prompt
+    assert "cp /etc/passwd /tmp/passwd.bak" in prompt
+    assert "sudo cp /etc/passwd /tmp/passwd.bak" not in prompt
     # The corrected, length-matched overwrite content (the bug this round fixed:
     # the prior doctrine's replacement line was longer than the original and
     # overran into the next line).

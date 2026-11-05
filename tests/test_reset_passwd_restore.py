@@ -15,12 +15,20 @@ def test_scripted_reset_backs_up_baseline_and_conditionally_restores():
     # after clearing any pre-existing rogue uid0 account first — otherwise a
     # leftover rogue account from an interrupted prior run gets baked into
     # the "clean" baseline forever (Important 1).
-    assert any(
-        "test -f /etc/passwd.purpleloop-baseline" in c
-        and "deluser" in c
+    baseline_cmd = next(
+        c for c in cmds
+        if "test -f /etc/passwd.purpleloop-baseline" in c
         and "cp /etc/passwd /etc/passwd.purpleloop-baseline" in c
-        for c in cmds
     )
+    assert "deluser" in baseline_cmd
+    # Strict ordering, not just co-occurrence: deluser attempt, THEN a
+    # re-check that it actually worked, THEN (only then) the cp. If deluser
+    # silently fails (e.g. a held-open account), the stale re-check must
+    # still block the cp rather than bake a rogue file into the baseline.
+    deluser_idx = baseline_cmd.index("deluser")
+    recheck_idx = baseline_cmd.index("{f=1} END{exit !f}")
+    cp_idx = baseline_cmd.index("cp /etc/passwd /etc/passwd.purpleloop-baseline")
+    assert deluser_idx < recheck_idx < cp_idx
     # Restore is conditional on a rogue uid0 account OR a diff from baseline,
     # not unconditional.
     assert any(

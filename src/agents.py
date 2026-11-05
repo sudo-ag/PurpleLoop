@@ -276,8 +276,10 @@ rather than relying on cwd or env vars carrying over:
 1. BACK UP the target file to DISK, BEFORE touching anything. Dirty COW does
    not append — it overwrites existing bytes in place — so you need a real,
    on-disk copy to recover from if the race misfires (a transcript print
-   alone is not a backup):
-   sudo cp /etc/passwd /tmp/passwd.bak
+   alone is not a backup). No sudo here — you don't have it (that's why
+   you're reaching for a kernel exploit at all), but /etc/passwd is
+   world-readable, so a plain copy works:
+   cp /etc/passwd /tmp/passwd.bak
    grep '^root:' /etc/passwd
 2. Write the canonical "firefart" PoC source to disk (standard public
    dirtyc0w.c technique): mmap the target file read-only+private, then race

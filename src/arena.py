@@ -219,10 +219,16 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     # interrupted prior run), remove it FIRST (plain deluser, no --remove-home,
     # same as Task 3's remove_privileged_account) — otherwise it gets baked into
     # the "clean" baseline and every future restore re-installs it forever.
+    # deluser's own failure is swallowed (e.g. a process still holding the
+    # account open), so re-check for any REMAINING rogue account after the
+    # attempt and only capture the baseline if that re-check comes back clean;
+    # if deluser didn't fully work, skip baseline creation this reset and let
+    # the next reset retry rather than bake in a still-rogue file.
     blue_ex.execute(
         "sudo test -f /etc/passwd.purpleloop-baseline || "
         "{ for u in $(sudo awk -F: '$1!=\"root\" && $3==0{print $1}' /etc/passwd); "
         "do sudo deluser \"$u\" 2>/dev/null; done; "
+        "sudo awk -F: '$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
         "sudo cp /etc/passwd /etc/passwd.purpleloop-baseline 2>/dev/null; }; true"
     )
     blue_ex.execute(
@@ -230,7 +236,10 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
         "! sudo diff -q /etc/passwd /etc/passwd.purpleloop-baseline >/dev/null 2>&1) && "
         "sudo cp /etc/passwd.purpleloop-baseline /etc/passwd 2>/dev/null; true"
     )
-    actions.append("ensured /etc/passwd baseline and restored it if rogue uid0/corruption found")
+    actions.append(
+        "ensured /etc/passwd baseline (skipped if a pre-existing rogue account "
+        "couldn't be cleared) and restored it if rogue uid0/corruption found"
+    )
 
     return {"episode": episode, "actions": actions}
 
