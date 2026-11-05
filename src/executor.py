@@ -1025,10 +1025,11 @@ class ToolExecutor:
         if not user or not all(c.isalnum() or c in "_-" for c in user):
             findings["summary"] = f"'{user}' is not a valid account name; nothing remediated."
             return findings
-        if user in _PROTECTED_ACCOUNTS or user == self.user:
+        # leading "-" would be parsed by usermod as an option
+        if user in _PROTECTED_ACCOUNTS or user == self.user or user.startswith("-"):
             findings["assessment"] = "REFUSED"
             findings["summary"] = (
-                f"Refused: '{user}' is a protected/defender account — locking it "
+                f"Refused: '{user}' is a protected/defender account or an option-like name — locking it "
                 "would harm the defender or the host."
             )
             return findings

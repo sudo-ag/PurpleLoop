@@ -51,4 +51,5 @@ def test_leading_dash_refused() -> None:
     ex = _executor()
     assert ex.remove_privileged_account("--remove-home")["assessment"] == "REFUSED"
     assert ex.revoke_escalation("--anything")["assessment"] == "REFUSED"
+    assert ex.remediate_account("--badflag")["assessment"] == "REFUSED"
     ex.execute.assert_not_called()
