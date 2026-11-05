@@ -56,6 +56,18 @@ def test_all_rogues_removed_before_flag_set():
     assert orch.state.rogue_removed
 
 
+def test_partial_failure_retry_skips_done_and_latches():
+    orch, remove = _orch({"flag_access_detected": True, "suspicious_users": ["a", "b"]})
+    detect = json.dumps({"suspicious_users": ["a", "b"]})
+    remove.side_effect = [{"removed": True}, {"removed": False}]
+    orch._auto_remove_rogue(detect)
+    assert not orch.state.rogue_removed
+    remove.side_effect = [{"removed": True}]  # only b is attempted; a would report False
+    orch._auto_remove_rogue(detect)
+    assert orch.state.rogue_removed
+    assert [c.args[0] for c in remove.call_args_list] == ["a", "b", "b"]
+
+
 def test_runs_in_observe_mode():
     orch, remove = _orch({"flag_access_detected": True, "suspicious_users": ["toor"]}, observe=True)
     orch.step()

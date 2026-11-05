@@ -96,6 +96,7 @@ class SimulationState:
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
     escalation_auto_revoked: bool = False  # blue's reflex stripped the foothold account's escalation path
+    rogue_removed_users: set = field(default_factory=set)  # rogue accounts verified removed (never re-attempted)
     rogue_removed: bool = False  # blue's reflex stripped the rogue uid-0 account
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
 
@@ -286,13 +287,15 @@ class Orchestrator:
             users = []
         if not users:
             return
-        all_ok = True
         for user in users:
+            if user in self.state.rogue_removed_users:
+                continue  # deluser isn't idempotent: re-removing a gone user reports failure
             try:
                 result = ex.remove_privileged_account(user)
             except Exception as e:  # SSH/deluser error must not crash the episode
                 result = {"removed": False, "error": str(e)}
-            all_ok = all_ok and bool(result.get("removed"))
+            if result.get("removed"):
+                self.state.rogue_removed_users.add(user)
             self.state.history.append({
                 "role": "blue", "turn": self.state.turn,
                 "tool": {"function": {"name": "remove_privileged_account",
@@ -302,7 +305,7 @@ class Orchestrator:
             self._notify_dashboard("battle_log",
                                    {"tool": "auto remove_privileged_account", "output": json.dumps(result)})
         # Only latch once every rogue is verified gone; otherwise retry next detection.
-        self.state.rogue_removed = all_ok
+        self.state.rogue_removed = all(u in self.state.rogue_removed_users for u in users)
 
     def _check_red_foothold(self, tool_call: Dict[str, Any], output: str) -> bool:
         """Red proved an interactive foothold this turn (T1): a validated
