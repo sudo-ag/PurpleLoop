@@ -299,6 +299,8 @@ class ToolExecutor:
         # True UTC epoch of the window start, for sources that carry an absolute
         # timestamp (docker StartedAt) rather than a syslog-local one.
         self.analysis_since_epoch: Optional[int] = None
+        # Names at uid 0 when the window opened; only accounts added after count.
+        self._uid0_baseline: Optional[set] = None
         self._analysis_year: int = datetime.datetime.now().year
         # The source IP of blue's own control session on the target, so blue can
         # tell its own management traffic from the attacker's. Detected at
@@ -645,6 +647,29 @@ class ToolExecutor:
         else:
             logger.info("Blue analysis window starts at target wall clock %s.", out)
         self._detect_control_source_ip()
+        self._uid0_baseline = self._uid0_accounts()
+
+    @staticmethod
+    def _parse_uid0(passwd: str) -> set:
+        return {f[0] for f in (ln.split(":") for ln in passwd.splitlines())
+                if len(f) >= 3 and f[2] == "0"}
+
+    def _uid0_accounts(self) -> set:
+        return self._parse_uid0(self.execute("cat /etc/passwd"))
+
+    def investigate_privileged_accounts(self) -> Dict[str, Any]:
+        """Posture sensor for a rogue root-equivalent account (e.g. Dirty COW
+        appending a uid-0 user to /etc/passwd). Window-bound: only a uid-0 name
+        absent from the baseline captured at mark_analysis_window is a breach; a
+        pre-existing uid-0 account is never credited."""
+        rogue = sorted(self._uid0_accounts() - (self._uid0_baseline or {"root"}))
+        return {
+            "tool": "investigate_privileged_accounts",
+            "rogue_accounts": rogue,
+            "suspicious_users": rogue,
+            "flag_access_detected": bool(rogue),
+            "assessment": "BREACH" if rogue else "CLEAN",
+        }
 
     def _detect_control_source_ip(self) -> None:
         """Record the source IP of blue's own control session on the target, so

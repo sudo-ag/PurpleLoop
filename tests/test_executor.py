@@ -182,8 +182,10 @@ def test_mark_analysis_window_reads_target_wall_clock():
     executor.execute = MagicMock(side_effect=[
         "2026 Oct  8 22:22:16|1760000000\n",
         "192.168.64.1 51000 192.168.64.12 22\n",
+        "root:x:0:0:root:/root:/bin/bash\nfirefart:x:0:0::/root:/bin/sh\n",
     ])
     executor.mark_analysis_window()
+    assert executor._uid0_baseline == {"root", "firefart"}
     assert executor._analysis_year == 2026
     assert executor.analysis_since == _syslog_line_epoch("Oct  8 22:22:16", 2026, None)
     assert executor.analysis_since_epoch == 1760000000
