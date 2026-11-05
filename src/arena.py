@@ -208,6 +208,22 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     blue_ex.execute("sudo docker container prune -f 2>/dev/null || true")
     actions.append("pruned stopped containers")
 
+    # Dirty COW leaves /etc/passwd either carrying a rogue uid=0 account or, on a
+    # botched race, byte-corrupted. Keep a one-time clean baseline and restore
+    # from it whenever either symptom shows up — this undoes both failure modes,
+    # not just the added line. Runs over the dojo_exploit_ok-gated blue_ex, since
+    # it names /etc/passwd.
+    blue_ex.execute(
+        "sudo test -f /etc/passwd.purpleloop-baseline || "
+        "sudo cp /etc/passwd /etc/passwd.purpleloop-baseline 2>/dev/null; true"
+    )
+    blue_ex.execute(
+        "(sudo awk -F: '$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
+        "! sudo diff -q /etc/passwd /etc/passwd.purpleloop-baseline >/dev/null 2>&1) && "
+        "sudo cp /etc/passwd.purpleloop-baseline /etc/passwd 2>/dev/null; true"
+    )
+    actions.append("ensured /etc/passwd baseline and restored it if rogue uid0/corruption found")
+
     return {"episode": episode, "actions": actions}
 
 

