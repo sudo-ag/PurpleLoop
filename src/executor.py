@@ -663,7 +663,9 @@ class ToolExecutor:
         self._webroot_baseline = self._capture_baseline(self._list_webroot)
         self._proc_baseline = self._capture_baseline(self._list_proc_signatures)
         self._ports_baseline = self._capture_baseline(self._list_listening_ports)
-        self._users_baseline = self._capture_baseline(self._list_users)
+        self._users_baseline = None
+        if self.dojo_exploit_ok:  # getent passwd is guard-blocked outside the dojo ("passwd" keyword)
+            self._users_baseline = self._capture_baseline(self._list_users)
 
     @staticmethod
     def _capture_baseline(fn: Callable[[], Optional[set]]) -> Optional[set]:
@@ -831,11 +833,17 @@ class ToolExecutor:
     def _list_users(self) -> Optional[set]:
         """Full username list via `getent passwd | cut -d: -f1` -- reads the
         same account database as `cat /etc/passwd` without the literal
-        substring `/etc/passwd`, which is in FORBIDDEN_KEYWORDS and would be
-        guard-blocked outside dojo mode. No dojo_exploit_ok gating needed, so
-        this sensor stays available in non-dojo runs. Validity is structural
-        (non-empty, one username per line) -- never "a specific username must
-        be present"."""
+        substring `/etc/passwd`. But the command string still contains the
+        BARE keyword "passwd", which is in FORBIDDEN_KEYWORDS (matched by
+        plain substring in _check_forbidden) and is only exempted when
+        dojo_exploit_ok=True. So this IS gated behind dojo_exploit_ok, same
+        reason and same pattern as `_uid0_accounts`'s `cat /etc/passwd` --
+        callers must check dojo_exploit_ok (or that the baseline is non-None)
+        before ever invoking this, never call it unconditionally. This means
+        investigate_box_anomalies's *users* signal (not ports) is dojo-only,
+        the same limitation investigate_privileged_accounts already has.
+        Validity is structural (non-empty, one username per line) -- never
+        "a specific username must be present"."""
         raw = self.execute("getent passwd | cut -d: -f1 2>/dev/null")
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         return set(lines) if lines else None
@@ -857,7 +865,12 @@ class ToolExecutor:
             "assessment": "CLEAN",
         }
         live_ports = self._list_listening_ports()
-        live_users = self._list_users()
+        # _list_users() runs a guard-blocked command outside the dojo (see its
+        # docstring) -- only call it live when a baseline was actually
+        # captured (i.e. dojo_exploit_ok was True at mark_analysis_window()),
+        # checked BEFORE calling, so the forbidden command is never attempted
+        # when gating is off.
+        live_users = self._list_users() if self._users_baseline is not None else None
         # Ports and users are two independent signals; one side's
         # baseline/read failing must not blind the other's diff.
         ports_ok, new_ports = self._diff_baseline(self._ports_baseline, live_ports)

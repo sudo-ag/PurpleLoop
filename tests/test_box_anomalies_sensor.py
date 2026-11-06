@@ -14,8 +14,12 @@ def _ss_output(ports):
     return "\n".join(lines)
 
 
-def _ex_returning(ports, users) -> ToolExecutor:
-    ex = ToolExecutor(host="mock", user="u", pwd="p")  # __init__ does not connect
+def _ex_returning(ports, users, dojo_exploit_ok=True) -> ToolExecutor:
+    # dojo_exploit_ok=True by default: the users signal ("getent passwd | cut
+    # -d: -f1") contains the bare "passwd" FORBIDDEN_KEYWORDS entry and is
+    # gated the same way _uid0_accounts's "cat /etc/passwd" is -- see the
+    # dedicated non-dojo tests below for that gating itself.
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=dojo_exploit_ok)  # __init__ does not connect
     ex._stub_ports = list(ports)
     ex._stub_users = list(users)
 
@@ -136,4 +140,87 @@ def test_users_baseline_missing_one_expected_user_is_still_valid():
     ex._stub_set_users(["root", "alice"])  # alice shows up later -> still "new"
     r = ex.investigate_box_anomalies()
     assert r["new_users"] == ["alice"]
+    assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
+
+
+# -- dojo_exploit_ok gating for the users signal ("getent passwd | cut -d: -f1"
+# contains the bare "passwd" FORBIDDEN_KEYWORDS entry -- see _list_users's
+# docstring). Mirrors tests/test_privileged_accounts.py's gating tests for
+# _uid0_accounts's "cat /etc/passwd" exactly.
+
+def test_non_dojo_mark_window_does_not_read_passwd():
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=False)
+
+    def fake_execute(cmd, *a, **k):
+        assert "passwd" not in cmd, "users read must be gated on dojo_exploit_ok"
+        if "date " in cmd:
+            return "2026 Oct  8 22:22:16|1760000000\n"
+        if "SSH_CONNECTION" in cmd:
+            return "192.168.64.1 51000 192.168.64.12 22\n"
+        if "ss -tln" in cmd:
+            return _ss_output(["22"])
+        return ""
+
+    ex.execute = fake_execute  # type: ignore[method-assign]
+    ex.mark_analysis_window()  # must not raise
+    assert ex._users_baseline is None
+    assert ex._ports_baseline is not None  # ports side is unaffected by this gate
+
+
+def test_non_dojo_real_guard_blocks_passwd():
+    import pytest
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=False)
+    with pytest.raises(ValueError):
+        ex._check_forbidden("getent passwd | cut -d: -f1", "remote")
+
+
+def test_non_dojo_investigate_never_attempts_live_passwd_read():
+    # Critical: the LIVE read inside investigate_box_anomalies() must also
+    # never attempt the guard-blocked command, not just the baseline capture.
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=False)
+
+    def fake_execute(cmd, *a, **k):
+        assert "passwd" not in cmd, "users read must be gated on dojo_exploit_ok"
+        if "date " in cmd:
+            return "2026 Oct  8 22:22:16|1760000000\n"
+        if "SSH_CONNECTION" in cmd:
+            return "192.168.64.1 51000 192.168.64.12 22\n"
+        if "ss -tln" in cmd:
+            return _ss_output(["22", "80"])
+        return ""
+
+    ex.execute = fake_execute  # type: ignore[method-assign]
+    ex.mark_analysis_window()
+    r = ex.investigate_box_anomalies()  # must not raise
+    assert r["users_unavailable"] is True
+    assert r.get("baseline_unavailable") is not True
+    assert r["new_ports"] == []  # ports side still works normally
+    assert r["flag_access_detected"] is False and r["assessment"] == "CLEAN"
+
+
+def test_dojo_users_signal_works_end_to_end_through_real_guard():
+    # Mirror case: with dojo_exploit_ok=True, the REAL _check_forbidden guard
+    # exempts "passwd" (DOJO_EXEMPT_KEYWORDS) and the users signal works
+    # end-to-end, not just through a test double that bypasses the guard.
+    ex = ToolExecutor(host="mock", user="u", pwd="p", dojo_exploit_ok=True)
+    ex._stub_users = ["root", "alice"]
+
+    def fake_execute(cmd, *a, **k):
+        ex._check_forbidden(cmd, "remote")  # exercise the REAL production guard
+        if "date " in cmd:
+            return "2026 Oct  8 22:22:16|1760000000\n"
+        if "SSH_CONNECTION" in cmd:
+            return "192.168.64.1 51000 192.168.64.12 22\n"
+        if "ss -tln" in cmd:
+            return _ss_output(["22"])
+        if "getent passwd" in cmd:
+            return "\n".join(ex._stub_users)
+        return ""
+
+    ex.execute = fake_execute  # type: ignore[method-assign]
+    ex.mark_analysis_window()
+    assert ex._users_baseline == {"root", "alice"}
+    ex._stub_users = ["root", "alice", "backdoor"]
+    r = ex.investigate_box_anomalies()
+    assert r["new_users"] == ["backdoor"]
     assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
