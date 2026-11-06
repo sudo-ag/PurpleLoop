@@ -231,6 +231,31 @@ def _syslog_line_epoch(line: str, year: int, ref_epoch: Optional[float]) -> Opti
     return ts
 
 
+_APACHE_COMBINED_RE = re.compile(
+    r'^(?P<ip>\S+) \S+ \S+ \[(?P<ts>[^\]]+)\] '
+    r'"(?P<request>[^"]*)" (?P<status>\d+) (?P<size>\S+) '
+    r'"(?P<referrer>[^"]*)" "(?P<ua>[^"]*)"'
+)
+
+# Burst threshold, justified against the real captured sqlmap pattern (1 GET +
+# 3 rapid POSTs = 4 requests spanning ~1 second): >=3 requests from one source
+# IP within a 2-second span. 2s gives headroom over the observed ~1s without
+# letting a single legitimate page load (1 request) ever qualify.
+_WEB_BURST_MIN_REQUESTS = 3
+_WEB_BURST_WINDOW_SECONDS = 2.0
+
+
+def _apache_combined_epoch(ts: str) -> Optional[float]:
+    """Epoch of Apache 'combined' log format's bracketed timestamp
+    ('06/Nov/2026:05:08:01 +0000'). This is NOT syslog format (it carries its
+    own year and UTC offset), so it's parsed independently of
+    _syslog_line_epoch/_within_window and compared as an absolute epoch."""
+    try:
+        return datetime.datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z").timestamp()
+    except ValueError:
+        return None
+
+
 class ToolExecutor:
     """
     The SSH Bridge for executing commands on a target host.
@@ -1006,6 +1031,19 @@ class ToolExecutor:
         a logged-in FTP session is not by itself evidence of compromise."""
         raw = self.execute("grep -i ftp /var/log/syslog 2>/dev/null || true")
         return self._parse_ftp_sessions(raw)
+
+    def investigate_web_requests(self) -> Dict[str, Any]:
+        """Attribution-only sensor for a burst-of-requests pattern in Apache's
+        access log — the fingerprint of an automated SQLi tool (e.g. sqlmap)
+        hammering the payroll app, as opposed to a human clicking through a
+        page. Mirrors investigate_ftp_sessions's shape: attribution only,
+        window-bound, self-filtered — this does NOT set flag_access_detected;
+        a burst alone is not evidence of compromise.
+
+        access.log is root:adm 0640 (unlike syslog's world-readable
+        permissions), so sudo is required to read it."""
+        raw = self.execute("sudo tail -2000 /var/log/apache2/access.log 2>/dev/null || true")
+        return self._parse_web_requests(raw)
 
     def investigate_docker(self, objective_path: str = "/root/flag.txt") -> Dict[str, Any]:
         """Posture sensor for container-escape (MITRE T1611): a container that
@@ -1952,6 +1990,79 @@ class ToolExecutor:
             "foreign_ips": sorted(foreign_ips),
             "summary": summary,
             "assessment": "MONITOR" if foreign_ips else "CLEAN",
+        }
+
+    def _parse_web_requests(self, raw: str) -> Dict[str, Any]:
+        """Parse Apache 'combined' access-log lines, group by source IP, and
+        flag a burst (>=_WEB_BURST_MIN_REQUESTS within _WEB_BURST_WINDOW_SECONDS
+        — see module-level constants for the justification against the real
+        captured pattern).
+
+        distinct_user_agents is reported per burst (the sqlmap --random-agent
+        tell) but NOT required for qualification: the real captured burst
+        above actually reuses one UA across all 4 requests, so requiring >1
+        would miss it.
+
+        Attribution ONLY — never sets flag_access_detected (see
+        investigate_web_requests docstring)."""
+        if not _is_substantive(raw):
+            return {
+                "tool": "investigate_web_requests",
+                "bursts": [],
+                "foreign_ips": [],
+                "summary": "No web request activity logged in the window.",
+            }
+
+        by_ip: Dict[str, List[Tuple[float, str]]] = {}
+        for line in raw.splitlines():
+            m = _APACHE_COMBINED_RE.match(line)
+            if not m:
+                continue
+            ts = _apache_combined_epoch(m.group("ts"))
+            if ts is None:
+                continue
+            if self.analysis_since_epoch is not None and ts < self.analysis_since_epoch:
+                continue
+            ip = m.group("ip")
+            if ip == self.control_source_ip:
+                # Blue's own management traffic — not an intrusion.
+                continue
+            by_ip.setdefault(ip, []).append((ts, m.group("ua")))
+
+        bursts = []
+        foreign_ips: set = set()
+        for ip, events in by_ip.items():
+            events.sort(key=lambda e: e[0])
+            best_count, best_i, best_j = 0, 0, 0
+            i = 0
+            for j in range(len(events)):
+                while events[j][0] - events[i][0] > _WEB_BURST_WINDOW_SECONDS:
+                    i += 1
+                if j - i + 1 > best_count:
+                    best_count, best_i, best_j = j - i + 1, i, j
+            if best_count < _WEB_BURST_MIN_REQUESTS:
+                continue
+            window_events = events[best_i:best_j + 1]
+            foreign_ips.add(ip)
+            bursts.append({
+                "source_ip": ip,
+                "request_count": best_count,
+                "window_seconds": window_events[-1][0] - window_events[0][0],
+                "distinct_user_agents": len({ua for _, ua in window_events}),
+            })
+
+        bursts.sort(key=lambda b: b["source_ip"])
+        foreign_ips_sorted = sorted(foreign_ips)
+        summary = (
+            f"Burst-of-requests pattern from {', '.join(foreign_ips_sorted)}."
+            if foreign_ips_sorted else
+            "No burst-of-requests pattern in the window."
+        )
+        return {
+            "tool": "investigate_web_requests",
+            "bursts": bursts,
+            "foreign_ips": foreign_ips_sorted,
+            "summary": summary,
         }
 
     def _parse_file_access(
