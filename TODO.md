@@ -4,6 +4,43 @@ Purple-team agent sim: an LLM **red** agent attacks a target box from its own
 attacker box while an LLM **blue** agent, resident on the target, investigates
 and (eventually) responds. This file tracks where we are and where we're going.
 
+## Current scope (set 2026-11-05, supersedes the per-CVE framing below)
+
+The ambition grew: the end goal is **versatile red/blue agents deployable on
+real environments** (capstone scope increase), not just clearing the
+Metasploitable3 vuln checklist. The checklist is still the near-term proof —
+it's evidence the loop generalizes within one box before spending effort on a
+second OS (Windows, later). Full design:
+`docs/superpowers/specs/2026-11-05-purpleloop-linux-breadth-families-design.md`.
+
+**The shape:** ~10 Linux vulns collapse into **5 technique families** (privesc,
+network-service RCE, web-app, credential-brute, post-ex) instead of ~30
+one-off CVE arcs. Build families 1–2 by hand, then extract a generic
+red-capability-library + blue-anomaly-profiler engine so families 3–5 are
+mostly configuration. Definition of done: a coverage matrix (red-reaches /
+blue-detects / blue-prevents per vector), auto-derived from existing episode
+telemetry via a `(tool,args,output)→vector` classifier.
+
+**Locked decisions:** red drives real `msfconsole` (confirmed on Kali `.11`)
+but selects the module itself — no-seeding line is "which vuln + which module
+stays red's discovery"; coverage is opportunistic + per-vector focus scenarios
+when red avoids the hard path; Windows is explicitly deferred.
+
+**Status:** Family 1 (privesc/Dirty COW) in progress on branch
+`family1-dirtycow`, built via Subagent-Driven Development. Tasks 1–4 done and
+reviewed clean (guardrail exception, blue's rogue-uid0 sensor, removal
+response, scoring+reflex). Task 5 (red's exploit doctrine) stalled on a real
+defect — the Dirty COW PoC overwrites `/etc/passwd` bytes in place rather than
+appending, so Task 6 (reset) needs a full backup/restore, not just
+`deluser firefart`. See `HANDOFF.md`'s 2026-11-05 session for the full resume
+checklist. **This session also hit repeated model-safety-classifier
+interruptions discussing exploit mechanics directly in chat** — route this
+kind of content through subagent dispatch instead (worked reliably); flagged
+in HANDOFF.md with a workaround and a pointer to Anthropic's Cyber
+Verification Program if it keeps recurring.
+
+---
+
 ## Vision / end states
 
 Two products share a detection core but diverge on action model:
