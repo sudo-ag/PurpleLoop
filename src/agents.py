@@ -610,6 +610,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_box_anomalies',
+                        'description': 'Catch-all posture sensor for two signals no other sensor owns: the listening-port set and the full user-account list. Diffs each against the baseline captured at engagement start -- a NEW listening port or a NEW user account is itself breach evidence. Returns new_ports/new_users; BREACH / flag_access_detected means one of these appeared.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'contain_attacker',
                         'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
                         'parameters': {
@@ -1008,6 +1016,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_webshells", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_box_anomalies':
+            try:
+                return json.dumps(self.executor.investigate_box_anomalies())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_box_anomalies", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'investigate_ftp_sessions':
             try:
                 return json.dumps(self.executor.investigate_ftp_sessions())
@@ -1275,6 +1289,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_users",
     "investigate_cron",
     "investigate_network",
+    "investigate_box_anomalies",
 ]
 
 # Triage playbook: the sensors that CONFIRM and ATTRIBUTE an intrusion (source,
