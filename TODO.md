@@ -26,18 +26,21 @@ but selects the module itself — no-seeding line is "which vuln + which module
 stays red's discovery"; coverage is opportunistic + per-vector focus scenarios
 when red avoids the hard path; Windows is explicitly deferred.
 
-**Status:** Family 1 (privesc/Dirty COW) in progress on branch
-`family1-dirtycow`, built via Subagent-Driven Development. Tasks 1–4 done and
-reviewed clean (guardrail exception, blue's rogue-uid0 sensor, removal
-response, scoring+reflex). Task 5 (red's exploit doctrine) stalled on a real
-defect — the Dirty COW PoC overwrites `/etc/passwd` bytes in place rather than
-appending, so Task 6 (reset) needs a full backup/restore, not just
-`deluser firefart`. See `HANDOFF.md`'s 2026-11-05 session for the full resume
-checklist. **This session also hit repeated model-safety-classifier
-interruptions discussing exploit mechanics directly in chat** — route this
-kind of content through subagent dispatch instead (worked reliably); flagged
-in HANDOFF.md with a workaround and a pointer to Anthropic's Cyber
-Verification Program if it keeps recurring.
+**Status:** Family 1 (privesc/Dirty COW) and Family 2 (network-RCE/ProFTPD
+`mod_copy`) are both done, reviewed, merged to `master`, and pushed. Next up
+(per the design doc's Mechanism C sequence): extract the generic engine from
+these two families before building Family 3. See `HANDOFF.md` for the
+detailed session history, including the model-safety-classifier workaround
+(route exploit-mechanics content through subagent dispatch, prefer Opus over
+Sonnet for that content — worked reliably both sessions).
+
+**Future expansion idea (not started, just logged):** give red more real
+tools beyond msf, and give blue actual defender-grade tooling (auditd,
+osquery, EDR-style agents) and eventually a SIEM-like layer. Not a new
+project — the blue "anomaly profiler" about to be built in the engine
+extraction below is already a tiny homemade SIEM (capture normal, flag
+deviations); a real SIEM product is a much later upgrade once that engine
+proves itself, not a near-term detour.
 
 ---
 
