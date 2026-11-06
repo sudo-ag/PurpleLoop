@@ -224,17 +224,30 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     # attempt and only capture the baseline if that re-check comes back clean;
     # if deluser didn't fully work, skip baseline creation this reset and let
     # the next reset retry rather than bake in a still-rogue file.
+    # Every sudo sub-command below that references /etc/passwd is prefixed with
+    # `env PURPLELOOP_RESET_MARKER=1` — an inert env var that rides along in the
+    # command's own argv (and so into sudo's auth.log COMMAND= text) purely so
+    # blue's auth-log detector (_RESET_HOUSEKEEPING_MARKER in executor.py) can
+    # tell this housekeeping apart from an attacker's diff/cp/awk on the same
+    # file, without changing what any of these commands actually do. See that
+    # detector's comment for the full rationale.
     blue_ex.execute(
         "sudo test -f /etc/passwd.purpleloop-baseline || "
-        "{ for u in $(sudo awk -F: '$1!=\"root\" && $3==0{print $1}' /etc/passwd); "
+        "{ for u in $(sudo env PURPLELOOP_RESET_MARKER=1 awk -F: "
+        "'$1!=\"root\" && $3==0{print $1}' /etc/passwd); "
         "do sudo deluser \"$u\" 2>/dev/null; done; "
-        "sudo awk -F: '$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
-        "sudo cp /etc/passwd /etc/passwd.purpleloop-baseline 2>/dev/null; }; true"
+        "sudo env PURPLELOOP_RESET_MARKER=1 awk -F: "
+        "'$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
+        "sudo env PURPLELOOP_RESET_MARKER=1 cp /etc/passwd /etc/passwd.purpleloop-baseline "
+        "2>/dev/null; }; true"
     )
     blue_ex.execute(
-        "(sudo awk -F: '$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
-        "! sudo diff -q /etc/passwd /etc/passwd.purpleloop-baseline >/dev/null 2>&1) && "
-        "sudo cp /etc/passwd.purpleloop-baseline /etc/passwd 2>/dev/null; true"
+        "(sudo env PURPLELOOP_RESET_MARKER=1 awk -F: "
+        "'$1!=\"root\" && $3==0{f=1} END{exit !f}' /etc/passwd || "
+        "! sudo env PURPLELOOP_RESET_MARKER=1 diff -q /etc/passwd /etc/passwd.purpleloop-baseline "
+        ">/dev/null 2>&1) && "
+        "sudo env PURPLELOOP_RESET_MARKER=1 cp /etc/passwd.purpleloop-baseline /etc/passwd "
+        "2>/dev/null; true"
     )
     actions.append(
         "ensured /etc/passwd baseline (skipped if a pre-existing rogue account "

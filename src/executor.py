@@ -2199,12 +2199,31 @@ _INSPECTION_VERBS = frozenset({
     "stat", "ls", "file", "getfacl", "lsattr", "find", "readlink", "test", "dir",
 })
 
+# scripted_reset's own baseline/restore housekeeping (src/arena.py) legitimately
+# reads and overwrites /etc/passwd via diff/cp/awk — verbs that genuinely DO
+# touch content, so they can't go on _INSPECTION_VERBS without also blinding
+# blue to a real `sudo cp /root/flag.txt /tmp/x` exfil. Instead, scripted_reset
+# tags each of its own sudo sub-commands with this env-var marker (via
+# `sudo env <MARKER>=1 <verb> ...`) — it rides in the command's own argv, so it
+# shows up verbatim in the sudo COMMAND= auth.log text this detector reads, and
+# setting an unused env var changes nothing about what diff/cp/awk actually do.
+# The name is project-specific; red has no reason to type it, by accident or
+# otherwise.
+# shortcut: an attacker who read this source and echoed the exact marker into
+# their own sudo call would evade detection too. Not defended against — getting
+# to that point is a far bigger compromise than the Dirty COW path this guards.
+_RESET_HOUSEKEEPING_MARKER = "PURPLELOOP_RESET_MARKER"
+
 
 def _is_sensitive_file_access(cmd: Optional[str]) -> bool:
     """True if a sudo COMMAND reads or modifies a sensitive file's contents.
     Blue's own metadata inspection (stat/ls/...) returns False, so blue never
-    scores its own investigation as a compromise."""
+    scores its own investigation as a compromise. scripted_reset's marked
+    housekeeping (see _RESET_HOUSEKEEPING_MARKER) returns False too, regardless
+    of verb, so blue's own passwd backup/restore isn't scored as a breach."""
     if not cmd:
+        return False
+    if _RESET_HOUSEKEEPING_MARKER in cmd:
         return False
     if not any(k in cmd.lower() for k in _SENSITIVE_PATH_KEYWORDS):
         return False

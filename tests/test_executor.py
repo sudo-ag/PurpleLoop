@@ -7,6 +7,7 @@ from src.executor import (
     SSH_MASTER_EXPECT,
     SSH_JUMP_SESSION_EXPECT,
     ToolExecutor,
+    _is_sensitive_file_access,
 )
 
 
@@ -298,6 +299,68 @@ def test_attacker_flag_read_is_a_breach():
     result = executor._parse_auth_log(line)
     assert result["flag_access_detected"] is True
     assert result["assessment"] == "BREACH"
+
+
+# scripted_reset's six real passwd-touching sudo sub-commands (src/arena.py),
+# each carrying the `env PURPLELOOP_RESET_MARKER=1` prefix that exempts them.
+_RESET_SUB_COMMANDS = [
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /usr/bin/awk -F: "
+    '\'$1!="root" && $3==0{print $1}\' /etc/passwd',
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /usr/bin/awk -F: "
+    '\'$1!="root" && $3==0{f=1} END{exit !f}\' /etc/passwd',
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /bin/cp /etc/passwd "
+    "/etc/passwd.purpleloop-baseline",
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /usr/bin/awk -F: "
+    '\'$1!="root" && $3==0{f=1} END{exit !f}\' /etc/passwd',
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /usr/bin/diff -q /etc/passwd "
+    "/etc/passwd.purpleloop-baseline",
+    "/usr/bin/env PURPLELOOP_RESET_MARKER=1 /bin/cp "
+    "/etc/passwd.purpleloop-baseline /etc/passwd",
+]
+
+
+def test_reset_housekeeping_marker_exempts_all_reset_subcommands():
+    # The exact bug: scripted_reset's own baseline/restore commands (diff/cp/awk
+    # on /etc/passwd) must never be scored as a root-level breach.
+    for cmd in _RESET_SUB_COMMANDS:
+        assert _is_sensitive_file_access(cmd) is False, cmd
+
+
+def test_reset_marker_exemption_via_auth_log_parser():
+    # Same bug, through the real path blue reads it from: a sudo auth.log line.
+    executor = _executor()
+    for cmd in _RESET_SUB_COMMANDS:
+        line = (
+            "Nov  5 10:00:00 ubuntu sudo:  vagrant : TTY=unknown ; PWD=/ ; "
+            f"USER=root ; COMMAND={cmd}"
+        )
+        result = executor._parse_auth_log(line)
+        assert result["flag_access_detected"] is False, cmd
+        assert result["assessment"] != "BREACH", cmd
+
+
+def test_unmarked_cp_exfil_still_flagged():
+    # The marker must not blind blue to a real attacker using the same verbs.
+    assert _is_sensitive_file_access("/bin/cp /root/flag.txt /tmp/x") is True
+
+
+def test_unmarked_diff_on_shadow_still_flagged():
+    assert _is_sensitive_file_access("/usr/bin/diff /etc/shadow /tmp/x") is True
+
+
+def test_unmarked_attacker_commands_still_breach_via_auth_log():
+    executor = _executor()
+    for cmd in (
+        "/bin/cp /root/flag.txt /tmp/x",
+        "/usr/bin/diff /etc/shadow /tmp/x",
+    ):
+        line = (
+            "Nov  5 10:01:00 ubuntu sudo:  mallory : TTY=pts/1 ; PWD=/tmp ; "
+            f"USER=root ; COMMAND={cmd}"
+        )
+        result = executor._parse_auth_log(line)
+        assert result["flag_access_detected"] is True, cmd
+        assert result["assessment"] == "BREACH", cmd
 
 
 _PS_HEADER = "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND"
