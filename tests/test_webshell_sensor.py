@@ -56,6 +56,50 @@ def test_no_baseline_is_clean_not_breach():
     assert r["flag_access_detected"] is False and r.get("baseline_unavailable") is True
 
 
+def test_php_only_webroot_baseline_is_captured_and_diffed():
+    # Real target's /var/www/html holds exactly one file: payroll_app.php --
+    # no .html, no allowlisted subdir. Baseline capture must not depend on
+    # either, or this sensor is permanently blind on the actual box.
+    ex = _ex_returning(webroot_files=["payroll_app.php"], procs=["apache2 -k start"])
+    ex.mark_analysis_window()
+    assert ex._webroot_baseline is not None
+    ex._stub_webroot_files(["payroll_app.php", "shell.php"])
+    r = ex.investigate_webshells()
+    assert r["new_files"] == ["shell.php"]
+    assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
+
+
+def test_webroot_baseline_failure_still_allows_process_diff():
+    # find returns nothing at baseline time -> webroot baseline is None, but
+    # the process baseline captured fine. The two signals are independent;
+    # one failing must not blind the other.
+    ex = _ex_returning(webroot_files=[], procs=["apache2 -k start"])
+    ex.mark_analysis_window()
+    assert ex._webroot_baseline is None
+    assert ex._proc_baseline is not None
+    ex._stub_procs(["apache2 -k start", "sh -c id"])
+    r = ex.investigate_webshells()
+    assert r.get("baseline_unavailable") is not True
+    assert r["webroot_unavailable"] is True
+    assert "sh -c id" in r["new_processes"]
+    assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
+
+
+def test_proc_baseline_failure_still_allows_webroot_diff():
+    # ps returns nothing at baseline time -> process baseline is None, but
+    # the webroot baseline captured fine.
+    ex = _ex_returning(webroot_files=["index.html"], procs=[])
+    ex.mark_analysis_window()
+    assert ex._proc_baseline is None
+    assert ex._webroot_baseline is not None
+    ex._stub_webroot_files(["index.html", "shell.php"])
+    r = ex.investigate_webshells()
+    assert r.get("baseline_unavailable") is not True
+    assert r["proc_unavailable"] is True
+    assert r["new_files"] == ["shell.php"]
+    assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
+
+
 def test_ssh_reconnect_with_different_pts_is_not_a_breach():
     # Blue's own control session shows up in `ps` as a transient sshd process.
     # A reconnect gets a NEW pts/pid ("sshd: user@pts/1" vs "...pts/0" at

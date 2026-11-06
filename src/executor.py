@@ -711,26 +711,21 @@ class ToolExecutor:
                        flag_access_detected=True, assessment="BREACH")
         return out
 
-    # Known web-root subdir names, used only to validate a `find` read isn't
-    # garbage/empty — not a hardcoded filename (Family 1's root-presence mistake).
-    _WEBROOT_SUBDIRS = {"images", "css", "js", "cgi-bin", "uploads", "assets", "img", "static"}
-
     def _list_webroot(self) -> Optional[set]:
         """Recursive snapshot of /var/www/html as paths relative to the web root.
-        None on an unreadable/empty result, or one that doesn't look like a real
-        web root (validated by a pattern — an .html file or a known subdir name —
-        never one specific hardcoded filename)."""
+        None on an unreadable/empty result. Validated structurally -- at least
+        one returned line actually sits under the web root -- never by the
+        presence of any specific extension or subdirectory name, since an
+        attack could legitimately plant a file of any name/extension there
+        (the real target's web root holds a single .php file, no .html)."""
         raw = self.execute("find /var/www/html -type f 2>/dev/null")
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         if not lines:
             return None
         prefix = "/var/www/html/"
-        rel = {ln[len(prefix):] if ln.startswith(prefix) else ln.lstrip("/") for ln in lines}
-        looks_valid = any(
-            r.endswith((".html", ".htm")) or r.split("/", 1)[0] in self._WEBROOT_SUBDIRS
-            for r in rel
-        )
-        return rel if looks_valid else None
+        if not any(ln.startswith(prefix) for ln in lines):
+            return None
+        return {ln[len(prefix):] if ln.startswith(prefix) else ln.lstrip("/") for ln in lines}
 
     # Blue's own SSH exec session (and any sftp transfer) shows up in `ps` as a
     # transient sshd/sftp-server process; filtered by command string (not pid,
@@ -762,15 +757,22 @@ class ToolExecutor:
         }
         live_files = self._list_webroot()
         live_procs = self._list_proc_signatures()
-        if (self._webroot_baseline is None or self._proc_baseline is None
-                or live_files is None or live_procs is None):
+        # Webroot and process tree are two independent signals; one side's
+        # baseline/read failing must not blind the other's diff.
+        webroot_ok = self._webroot_baseline is not None and live_files is not None
+        proc_ok = self._proc_baseline is not None and live_procs is not None
+        if not webroot_ok and not proc_ok:
             out["baseline_unavailable"] = True
             return out
-        new_files = sorted(live_files - self._webroot_baseline)
-        new_processes = sorted(live_procs - self._proc_baseline)
-        out["new_files"] = new_files
-        out["new_processes"] = new_processes
-        if new_files or new_processes:
+        if webroot_ok:
+            out["new_files"] = sorted(live_files - self._webroot_baseline)
+        else:
+            out["webroot_unavailable"] = True
+        if proc_ok:
+            out["new_processes"] = sorted(live_procs - self._proc_baseline)
+        else:
+            out["proc_unavailable"] = True
+        if out["new_files"] or out["new_processes"]:
             out["flag_access_detected"] = True
             out["assessment"] = "BREACH"
         return out
