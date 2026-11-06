@@ -4,6 +4,7 @@ T2 (exfil) is declared but inert until the web/DB sensor lands, so these tests
 only exercise T1/T3 recording plus the pure scoreboard/verdict logic.
 """
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from src.agents import Agent
@@ -60,6 +61,15 @@ def test_verified_rogue_uid0_via_passwd_grep_is_root_tier():
     orch = _orch()
     out = "firefart::0:0:pwned:/root:/bin/bash"
     assert orch._check_red_rogue_root_creation(_tool("execute_command"), out) is True
+
+
+def test_rogue_uid0_already_in_baseline_is_not_credited():
+    # Window-binding: a non-root uid0 account that was ALREADY present when the
+    # window opened (pre-existing on the box) must not false-credit the tier.
+    orch = _orch()
+    orch.blue_agent = SimpleNamespace(executor=SimpleNamespace(_uid0_baseline={"firefart"}))
+    out = "uid=0(firefart) gid=0(root) groups=0(root)"
+    assert orch._check_red_rogue_root_creation(_tool("execute_command"), out) is False
 
 
 def test_root_account_itself_is_not_rogue():

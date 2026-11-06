@@ -325,11 +325,23 @@ class Orchestrator:
             return False
         if not output or self._is_error_output(output):
             return False
+        # Window-bind like blue's investigate_privileged_accounts: only a uid-0
+        # name NEW since the window opened is a breach. Reuse blue's executor
+        # baseline (captured at mark_analysis_window). If none is available
+        # (non-dojo run / read failed), keep the permissive behavior rather than
+        # dropping a real detection.
+        baseline = getattr(getattr(self.blue_agent, "executor", None), "_uid0_baseline", None)
+        if not isinstance(baseline, set):
+            baseline = None
+
+        def _is_new(acct: str) -> bool:
+            return baseline is None or acct not in baseline
+
         for m in re.finditer(r"uid=0\((\w+)\)", output):
-            if m.group(1) != "root":
+            if m.group(1) != "root" and _is_new(m.group(1)):
                 return True
         for m in re.finditer(r"^(\w+):[^:\n]*:0:0:", output, re.MULTILINE):
-            if m.group(1) != "root":
+            if m.group(1) != "root" and _is_new(m.group(1)):
                 return True
         return False
 

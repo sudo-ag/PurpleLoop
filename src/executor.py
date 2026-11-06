@@ -666,9 +666,11 @@ class ToolExecutor:
 
     def investigate_privileged_accounts(self) -> Dict[str, Any]:
         """Posture sensor for a rogue root-equivalent account (e.g. Dirty COW
-        appending a uid-0 user to /etc/passwd). Window-bound: only a uid-0 name
+        overwriting the root line of /etc/passwd with a uid-0 user — it replaces
+        the line in place, it does not append). Window-bound: only a uid-0 name
         absent from the baseline captured at mark_analysis_window is a breach; a
-        pre-existing uid-0 account is never credited."""
+        pre-existing uid-0 account is never credited. Set-difference against the
+        baseline handles both an ADDED name and a name that REPLACED root."""
         out: Dict[str, Any] = {
             "tool": "investigate_privileged_accounts",
             "rogue_accounts": [],
@@ -680,9 +682,15 @@ class ToolExecutor:
         if self._uid0_baseline is None or not self.dojo_exploit_ok:
             out["baseline_unavailable"] = True
             return out
-        live = self._uid0_accounts()
-        if "root" not in live:
+        raw = self.execute("cat /etc/passwd")
+        # Read-validity signal: a real /etc/passwd has many well-formed 7-field
+        # entries; empty/error output has ~0-1. We deliberately do NOT use "is
+        # root present" here — a successful Dirty COW overwrite REPLACES the root
+        # line, so root legitimately vanishes from a valid read, which is the very
+        # case this sensor exists to catch.
+        if sum(1 for ln in raw.splitlines() if len(ln.split(":")) >= 7) < 2:
             return out
+        live = self._parse_uid0(raw)
         rogue = sorted(live - self._uid0_baseline)
         if rogue:
             out.update(rogue_accounts=rogue, suspicious_users=rogue,

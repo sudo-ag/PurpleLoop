@@ -3,6 +3,8 @@ from src.executor import ToolExecutor
 
 PASSWD_CLEAN = "root:x:0:0:root:/root:/bin/bash\nboba_fett:x:1121:100::/home/boba:/bin/bash\n"
 PASSWD_ROGUE = PASSWD_CLEAN + "firefart:x:0:0:pwned:/root:/bin/bash\n"
+# Dirty COW overwrites the root line in place: root vanishes, firefart takes uid 0.
+PASSWD_OVERWRITTEN = "firefart:x:0:0:pwned:/root:/bin/bash\nboba_fett:x:1121:100::/home/boba:/bin/bash\n"
 
 
 def _ex_returning(passwd: str) -> ToolExecutor:
@@ -19,6 +21,16 @@ def test_only_root_uid0_is_clean():
 
 def test_new_uid0_is_a_breach():
     ex = _ex_returning(PASSWD_ROGUE); ex._uid0_baseline = {"root"}
+    r = ex.investigate_privileged_accounts()
+    assert r["rogue_accounts"] == ["firefart"]
+    assert r["suspicious_users"] == ["firefart"]
+    assert r["flag_access_detected"] is True and r["assessment"] == "BREACH"
+
+
+def test_root_replaced_by_rogue_is_a_breach():
+    # Dirty COW OVERWRITES the root line: root is absent from a valid read, yet
+    # this must still be flagged (not silently reported clean/unavailable).
+    ex = _ex_returning(PASSWD_OVERWRITTEN); ex._uid0_baseline = {"root"}
     r = ex.investigate_privileged_accounts()
     assert r["rogue_accounts"] == ["firefart"]
     assert r["suspicious_users"] == ["firefart"]
