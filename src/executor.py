@@ -301,6 +301,10 @@ class ToolExecutor:
         self.analysis_since_epoch: Optional[int] = None
         # Names at uid 0 when the window opened; only accounts added after count.
         self._uid0_baseline: Optional[set] = None
+        # Web root file listing + process-tree snapshot at window open, for the
+        # webshell-planting sensor (investigate_webshells).
+        self._webroot_baseline: Optional[set] = None
+        self._proc_baseline: Optional[set] = None
         self._analysis_year: int = datetime.datetime.now().year
         # The source IP of blue's own control session on the target, so blue can
         # tell its own management traffic from the attacker's. Detected at
@@ -655,6 +659,16 @@ class ToolExecutor:
                 uid0 = set()
             # 'root' present = proof the read worked; else no trustworthy baseline.
             self._uid0_baseline = uid0 if "root" in uid0 else None
+        self._webroot_baseline = None
+        try:
+            self._webroot_baseline = self._list_webroot()
+        except Exception:
+            pass
+        self._proc_baseline = None
+        try:
+            self._proc_baseline = self._list_proc_signatures()
+        except Exception:
+            pass
 
     @staticmethod
     def _parse_uid0(passwd: str) -> set:
@@ -695,6 +709,70 @@ class ToolExecutor:
         if rogue:
             out.update(rogue_accounts=rogue, suspicious_users=rogue,
                        flag_access_detected=True, assessment="BREACH")
+        return out
+
+    # Known web-root subdir names, used only to validate a `find` read isn't
+    # garbage/empty — not a hardcoded filename (Family 1's root-presence mistake).
+    _WEBROOT_SUBDIRS = {"images", "css", "js", "cgi-bin", "uploads", "assets", "img", "static"}
+
+    def _list_webroot(self) -> Optional[set]:
+        """Recursive snapshot of /var/www/html as paths relative to the web root.
+        None on an unreadable/empty result, or one that doesn't look like a real
+        web root (validated by a pattern — an .html file or a known subdir name —
+        never one specific hardcoded filename)."""
+        raw = self.execute("find /var/www/html -type f 2>/dev/null")
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        prefix = "/var/www/html/"
+        rel = {ln[len(prefix):] if ln.startswith(prefix) else ln.lstrip("/") for ln in lines}
+        looks_valid = any(
+            r.endswith((".html", ".htm")) or r.split("/", 1)[0] in self._WEBROOT_SUBDIRS
+            for r in rel
+        )
+        return rel if looks_valid else None
+
+    # Blue's own SSH exec session (and any sftp transfer) shows up in `ps` as a
+    # transient sshd/sftp-server process; filtered by command string (not pid,
+    # which churns) so the baseline stays stable across reconnects.
+    _SSH_NOISE = re.compile(r"sshd:|sftp-server")
+
+    def _list_proc_signatures(self) -> Optional[set]:
+        """Process-tree snapshot as a set of command strings (not pids, which
+        churn on every poll)."""
+        raw = self.execute("ps -eo args --no-headers 2>/dev/null")
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        return {ln for ln in lines if not self._SSH_NOISE.search(ln)}
+
+    def investigate_webshells(self) -> Dict[str, Any]:
+        """Posture sensor for a planted webshell (e.g. ProFTPD mod_copy
+        arbitrary-file-write RCE): diff the web root's file listing and the
+        process tree against the baseline captured at mark_analysis_window(). A
+        webshell lands as a NEW file under /var/www/html and, once triggered,
+        spawns a NEW child process under the web server (e.g. `sh -c id`) absent
+        at window start — either is a breach."""
+        out: Dict[str, Any] = {
+            "tool": "investigate_webshells",
+            "new_files": [],
+            "new_processes": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
+        }
+        live_files = self._list_webroot()
+        live_procs = self._list_proc_signatures()
+        if (self._webroot_baseline is None or self._proc_baseline is None
+                or live_files is None or live_procs is None):
+            out["baseline_unavailable"] = True
+            return out
+        new_files = sorted(live_files - self._webroot_baseline)
+        new_processes = sorted(live_procs - self._proc_baseline)
+        out["new_files"] = new_files
+        out["new_processes"] = new_processes
+        if new_files or new_processes:
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
         return out
 
     def _detect_control_source_ip(self) -> None:
