@@ -54,3 +54,21 @@ def test_no_baseline_is_clean_not_breach():
     # mark_analysis_window() never called -> no baseline
     r = ex.investigate_webshells()
     assert r["flag_access_detected"] is False and r.get("baseline_unavailable") is True
+
+
+def test_ssh_reconnect_with_different_pts_is_not_a_breach():
+    # Blue's own control session shows up in `ps` as a transient sshd process.
+    # A reconnect gets a NEW pts/pid ("sshd: user@pts/1" vs "...pts/0" at
+    # baseline time) -- the noise filter must drop both, on either side of the
+    # diff, by command-string pattern, not by exact match, or every reconnect
+    # would false-positive a breach.
+    ex = _ex_returning(
+        webroot_files=["index.html"],
+        procs=["apache2 -k start", "sshd: user@pts/0"],
+    )
+    ex.mark_analysis_window()
+    ex._stub_procs(["apache2 -k start", "sshd: user@pts/1"])  # reconnected
+    r = ex.investigate_webshells()
+    assert "sshd: user@pts/1" not in r["new_processes"]
+    assert r["new_processes"] == []
+    assert r["flag_access_detected"] is False and r["assessment"] == "CLEAN"
