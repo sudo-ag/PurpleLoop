@@ -561,6 +561,22 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_webshells',
+                        'description': 'Posture sensor for a planted webshell (e.g. ProFTPD mod_copy arbitrary-file-write RCE): diffs the web root file listing and process tree against the baseline captured at engagement start. A NEW file under /var/www/html, or a NEW child process under the web server absent at window start, is a breach — this is the sole breach signal for the network-RCE family. Returns new_files/new_processes; BREACH / flag_access_detected means a webshell landed or fired.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'investigate_ftp_sessions',
+                        'description': 'Attribution sensor for FTP session activity (ProFTPD mod_copy family): parses session open/close lines for the foreign source IP and when it connected. Attribution/dwell-time ONLY — does NOT set flag_access_detected; a logged-in FTP session is not by itself evidence of compromise (use investigate_webshells for that). Returns sessions and foreign_ips.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'contain_attacker',
                         'description': 'Contain an in-progress attacker by blocking their source IP at the target firewall (reversible). Call this the moment you identify the attacker IP — a successful login from an IP that is NOT your own control session (i.e. an entry in suspicious_ips). Containing before the attacker reads the flag stops the breach; do not wait for a confirmed flag read. Takes an ip argument.',
                         'parameters': {
@@ -953,6 +969,18 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_privileged_accounts", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_webshells':
+            try:
+                return json.dumps(self.executor.investigate_webshells())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_webshells", "status": "error", "error": str(e)})
+
+        elif tool_call['function']['name'] == 'investigate_ftp_sessions':
+            try:
+                return json.dumps(self.executor.investigate_ftp_sessions())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_ftp_sessions", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")
             if self.observe:
@@ -1209,6 +1237,8 @@ BLUE_TOOL_PRIORITY = [
     "investigate_processes",
     "investigate_docker",
     "investigate_privileged_accounts",
+    "investigate_webshells",
+    "investigate_ftp_sessions",
     "investigate_users",
     "investigate_cron",
     "investigate_network",

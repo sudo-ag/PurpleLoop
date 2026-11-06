@@ -180,3 +180,10 @@ def test_build_agents_handed_red_keeps_configured_cred():
     assert red.executor.require_foothold is False
     assert red.executor.user == "vagrant"
     assert getattr(red, "attacker_executor", None) is None
+
+
+def test_build_agents_attacker_executor_has_raised_timeout():
+    # Task 3 (family2-network-rce): a cold msfconsole module-cache load on the
+    # Kali jump box blows past the 60s default, so attacker_ex needs headroom.
+    red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False)
+    assert red.attacker_executor.timeout >= 300

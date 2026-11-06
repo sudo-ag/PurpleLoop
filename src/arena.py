@@ -287,7 +287,10 @@ def build_agents(
                 dojo_exploit_ok=(host != "mock"),
             )
             if earned:
-                attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd)
+                # Task 3 (family2-network-rce): a cold msfconsole module-cache
+                # load on the Kali jump box routinely exceeds the 60s default
+                # timeout, so give the attacker channel headroom.
+                attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd, timeout=300)
         else:
             red_ex = blue_ex
     kp = REPO / "knowledge.json"
