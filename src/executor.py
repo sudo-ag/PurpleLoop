@@ -2209,25 +2209,50 @@ _INSPECTION_VERBS = frozenset({
 # setting an unused env var changes nothing about what diff/cp/awk actually do.
 # The name is project-specific; red has no reason to type it, by accident or
 # otherwise.
-# shortcut: an attacker who read this source and echoed the exact marker into
-# their own sudo call would evade detection too. Not defended against — getting
-# to that point is a far bigger compromise than the Dirty COW path this guards.
+# shortcut: an attacker who read this source and reproduced the exact
+# `env <MARKER>=1 <verb>` structure (not just the marker text) ahead of their
+# own sudo call would evade detection too. Not defended against — getting to
+# that point is a far bigger compromise than the Dirty COW path this guards.
 _RESET_HOUSEKEEPING_MARKER = "PURPLELOOP_RESET_MARKER"
+
+
+def _has_reset_marker(tokens: List[str]) -> bool:
+    """True if TOKENS are `env PURPLELOOP_RESET_MARKER=<val> <verb> ...` —
+    the marker must be a leading env-assignment token, right after `env`,
+    before the real command verb. A bare substring check (marker text
+    anywhere in the command) would let an attacker's own command carry the
+    marker as an ordinary argument or filename — e.g.
+    `sudo cp /root/flag.txt /tmp/PURPLELOOP_RESET_MARKER` — and evade
+    detection without reproducing reset's actual env-assignment structure."""
+    if not tokens:
+        return False
+    if tokens[0].rsplit("/", 1)[-1].lower() != "env":
+        return False
+    for tok in tokens[1:]:
+        name, sep, _ = tok.partition("=")
+        if not sep:
+            # First token without "=" is the real verb — the marker must
+            # appear before this point, as one of env's own assignments.
+            return False
+        if name == _RESET_HOUSEKEEPING_MARKER:
+            return True
+    return False
 
 
 def _is_sensitive_file_access(cmd: Optional[str]) -> bool:
     """True if a sudo COMMAND reads or modifies a sensitive file's contents.
     Blue's own metadata inspection (stat/ls/...) returns False, so blue never
     scores its own investigation as a compromise. scripted_reset's marked
-    housekeeping (see _RESET_HOUSEKEEPING_MARKER) returns False too, regardless
-    of verb, so blue's own passwd backup/restore isn't scored as a breach."""
+    housekeeping (see _RESET_HOUSEKEEPING_MARKER / _has_reset_marker) returns
+    False too, regardless of verb, so blue's own passwd backup/restore isn't
+    scored as a breach."""
     if not cmd:
         return False
-    if _RESET_HOUSEKEEPING_MARKER in cmd:
+    tokens = cmd.split()
+    if _has_reset_marker(tokens):
         return False
     if not any(k in cmd.lower() for k in _SENSITIVE_PATH_KEYWORDS):
         return False
-    tokens = cmd.split()
     verb = tokens[0].rsplit("/", 1)[-1].lower() if tokens else ""
     return verb not in _INSPECTION_VERBS
 

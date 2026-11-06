@@ -348,6 +348,22 @@ def test_unmarked_diff_on_shadow_still_flagged():
     assert _is_sensitive_file_access("/usr/bin/diff /etc/shadow /tmp/x") is True
 
 
+def test_marker_text_as_bare_argument_does_not_evade_detection():
+    # The exemption must require the marker as a leading `env <MARKER>=1`
+    # assignment (the exact structural form scripted_reset emits), not a
+    # bare substring anywhere in the command. Otherwise an attacker could
+    # evade detection just by putting the marker string in an unrelated
+    # argument/filename, without reproducing the real env-assignment
+    # structure — e.g. exfiltrating the flag to a file that happens to be
+    # named after the marker.
+    assert _is_sensitive_file_access(
+        "/bin/cp /root/flag.txt /tmp/PURPLELOOP_RESET_MARKER"
+    ) is True
+    assert _is_sensitive_file_access(
+        "/usr/bin/diff /etc/shadow /tmp/PURPLELOOP_RESET_MARKER=1"
+    ) is True
+
+
 def test_unmarked_attacker_commands_still_breach_via_auth_log():
     executor = _executor()
     for cmd in (

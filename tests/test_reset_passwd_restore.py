@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from src.arena import scripted_reset
+from src.executor import _is_sensitive_file_access
 
 
 def test_scripted_reset_backs_up_baseline_and_conditionally_restores():
@@ -39,6 +40,33 @@ def test_scripted_reset_backs_up_baseline_and_conditionally_restores():
     )
     assert any("passwd" in a for a in out["actions"])
     assert "/etc/passwd" in joined
+
+
+def test_scripted_reset_subcommands_are_all_exempt_from_breach_detection():
+    # Ties the "reset's own /etc/passwd housekeeping never scores as a
+    # breach" claim to the ACTUAL commands scripted_reset emits, not a
+    # hand-copied mirror of them in a test file (which could silently drift
+    # from arena.py if a future edit drops the marker from one call).
+    blue = MagicMock()
+    red = SimpleNamespace(jump_host=None)
+    scripted_reset(blue, red, episode=1)
+    cmds = [c.args[0] for c in blue.execute.call_args_list]
+
+    checked = 0
+    for script in cmds:
+        # Split into the same granularity sudo itself logs: one COMMAND=
+        # per `sudo ...` invocation (the text sudo logs excludes the literal
+        # "sudo" word itself, matching what _is_sensitive_file_access reads
+        # from a real auth.log COMMAND= field).
+        for part in script.split("sudo ")[1:]:
+            if "/etc/passwd" not in part:
+                continue
+            checked += 1
+            assert _is_sensitive_file_access(part) is False, part
+    # Real source has 6 /etc/passwd-referencing sub-invocations across the
+    # two reset commands (3 awk checks, 1 diff, 2 cp) — fail loudly if that
+    # drops to 0, since an empty loop would pass vacuously.
+    assert checked >= 6
 
 
 def test_scripted_reset_restore_is_a_safe_no_op_when_nothing_to_restore():
