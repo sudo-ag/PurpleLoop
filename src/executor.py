@@ -880,6 +880,17 @@ class ToolExecutor:
         )
         return self._parse_connections(raw)
 
+    def investigate_ftp_sessions(self) -> Dict[str, Any]:
+        """Attribution/dwell-time sensor for FTP session activity (ProFTPD
+        mod_copy family): parses `/var/log/syslog` for session open/close
+        lines, attributing the foreign source IP and when it connected.
+
+        This is attribution ONLY — it does NOT set flag_access_detected.
+        investigate_webshells() is the sole breach signal for this family;
+        a logged-in FTP session is not by itself evidence of compromise."""
+        raw = self.execute("grep -i ftp /var/log/syslog 2>/dev/null || true")
+        return self._parse_ftp_sessions(raw)
+
     def investigate_docker(self, objective_path: str = "/root/flag.txt") -> Dict[str, Any]:
         """Posture sensor for container-escape (MITRE T1611): a container that
         bind-mounts the host filesystem, runs privileged, or shares a host
@@ -1770,6 +1781,61 @@ class ToolExecutor:
                 if foreign_ips else
                 "No foreign inbound connections seen."
             ),
+        }
+
+    def _parse_ftp_sessions(self, raw: str) -> Dict[str, Any]:
+        """Parse proftpd session open/close lines, e.g.:
+        'Nov  6 00:48:25 ubuntu proftpd[3470]: localhost (192.168.64.1[192.168.64.1]) - FTP session opened.'
+
+        Attribution/dwell-time only — never sets flag_access_detected (see
+        investigate_ftp_sessions docstring)."""
+        if not _is_substantive(raw):
+            return {
+                "tool": "investigate_ftp_sessions",
+                "sessions": [],
+                "foreign_ips": [],
+                "summary": "No FTP session activity logged in the window.",
+                "assessment": "CLEAN",
+            }
+
+        sessions = []
+        foreign_ips: set = set()
+        for line in raw.splitlines():
+            if not self._within_window(line):
+                continue
+            m = re.search(r"proftpd\[\d+\]: localhost \(([^\[]+)\[", line)
+            if not m:
+                continue
+            ip = m.group(1)
+            if ip == self.control_source_ip:
+                # Blue's own management session — not an intrusion.
+                continue
+            if "session opened" in line.lower():
+                event = "opened"
+            elif "session closed" in line.lower():
+                event = "closed"
+            else:
+                continue
+            foreign_ips.add(ip)
+            sessions.append({
+                "source_ip": ip,
+                "event": event,
+                "timestamp": " ".join(line.split(maxsplit=3)[:3]),
+                "raw": line.strip(),
+            })
+
+        summary = (
+            f"FTP session activity from {', '.join(sorted(foreign_ips))} "
+            f"({len(sessions)} events)."
+            if foreign_ips else
+            "No foreign FTP session activity in the window."
+        )
+        return {
+            "tool": "investigate_ftp_sessions",
+            "sessions": sessions,
+            "foreign_ips": sorted(foreign_ips),
+            "summary": summary,
+            "assessment": "MONITOR" if foreign_ips else "CLEAN",
         }
 
     def _parse_file_access(
