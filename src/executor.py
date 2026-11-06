@@ -7,7 +7,7 @@ import tempfile
 import atexit
 import datetime
 import time
-from typing import List, Optional, Dict, Any
+from typing import Callable, List, Optional, Dict, Any, Tuple
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -653,22 +653,34 @@ class ToolExecutor:
         self._detect_control_source_ip()
         self._uid0_baseline = None
         if self.dojo_exploit_ok:  # passwd read is guard-blocked outside the dojo
-            try:
-                uid0 = self._uid0_accounts()
-            except Exception:
-                uid0 = set()
+            uid0 = self._capture_baseline(self._uid0_accounts)
             # 'root' present = proof the read worked; else no trustworthy baseline.
-            self._uid0_baseline = uid0 if "root" in uid0 else None
-        self._webroot_baseline = None
+            self._uid0_baseline = uid0 if uid0 is not None and "root" in uid0 else None
+        self._webroot_baseline = self._capture_baseline(self._list_webroot)
+        self._proc_baseline = self._capture_baseline(self._list_proc_signatures)
+
+    @staticmethod
+    def _capture_baseline(fn: Callable[[], Optional[set]]) -> Optional[set]:
+        """Run a baseline-reading callback under the same try/except-to-None
+        discipline every mark_analysis_window() baseline needs: a failed read
+        (exception) or a read the callback itself rejects (returns None) both
+        mean "no trustworthy baseline" to the caller. The callback is still
+        the one place each sensor's own validity check lives (e.g. uid0's
+        root-sentinel vs webroot's/proc's structural checks) -- this helper
+        only standardizes catching failures, not what counts as valid."""
         try:
-            self._webroot_baseline = self._list_webroot()
+            return fn()
         except Exception:
-            pass
-        self._proc_baseline = None
-        try:
-            self._proc_baseline = self._list_proc_signatures()
-        except Exception:
-            pass
+            return None
+
+    @staticmethod
+    def _diff_baseline(baseline: Optional[set], live: Optional[set]) -> Tuple[bool, List[str]]:
+        """Shared shape for 'is this baseline+live pair usable, and if so what's
+        new': either side missing means no trustworthy diff (False, []);
+        otherwise the sorted set-difference new in `live`."""
+        if baseline is None or live is None:
+            return (False, [])
+        return (True, sorted(live - baseline))
 
     @staticmethod
     def _parse_uid0(passwd: str) -> set:
@@ -705,7 +717,7 @@ class ToolExecutor:
         if sum(1 for ln in raw.splitlines() if len(ln.split(":")) >= 7) < 2:
             return out
         live = self._parse_uid0(raw)
-        rogue = sorted(live - self._uid0_baseline)
+        _, rogue = self._diff_baseline(self._uid0_baseline, live)
         if rogue:
             out.update(rogue_accounts=rogue, suspicious_users=rogue,
                        flag_access_detected=True, assessment="BREACH")
@@ -759,17 +771,17 @@ class ToolExecutor:
         live_procs = self._list_proc_signatures()
         # Webroot and process tree are two independent signals; one side's
         # baseline/read failing must not blind the other's diff.
-        webroot_ok = self._webroot_baseline is not None and live_files is not None
-        proc_ok = self._proc_baseline is not None and live_procs is not None
+        webroot_ok, new_files = self._diff_baseline(self._webroot_baseline, live_files)
+        proc_ok, new_processes = self._diff_baseline(self._proc_baseline, live_procs)
         if not webroot_ok and not proc_ok:
             out["baseline_unavailable"] = True
             return out
         if webroot_ok:
-            out["new_files"] = sorted(live_files - self._webroot_baseline)
+            out["new_files"] = new_files
         else:
             out["webroot_unavailable"] = True
         if proc_ok:
-            out["new_processes"] = sorted(live_procs - self._proc_baseline)
+            out["new_processes"] = new_processes
         else:
             out["proc_unavailable"] = True
         if out["new_files"] or out["new_processes"]:
