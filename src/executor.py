@@ -305,6 +305,10 @@ class ToolExecutor:
         # webshell-planting sensor (investigate_webshells).
         self._webroot_baseline: Optional[set] = None
         self._proc_baseline: Optional[set] = None
+        # Listening-port set + full user-account list at window open, for the
+        # catch-all sensor (investigate_box_anomalies).
+        self._ports_baseline: Optional[set] = None
+        self._users_baseline: Optional[set] = None
         self._analysis_year: int = datetime.datetime.now().year
         # The source IP of blue's own control session on the target, so blue can
         # tell its own management traffic from the attacker's. Detected at
@@ -658,6 +662,8 @@ class ToolExecutor:
             self._uid0_baseline = uid0 if uid0 is not None and "root" in uid0 else None
         self._webroot_baseline = self._capture_baseline(self._list_webroot)
         self._proc_baseline = self._capture_baseline(self._list_proc_signatures)
+        self._ports_baseline = self._capture_baseline(self._list_listening_ports)
+        self._users_baseline = self._capture_baseline(self._list_users)
 
     @staticmethod
     def _capture_baseline(fn: Callable[[], Optional[set]]) -> Optional[set]:
@@ -785,6 +791,89 @@ class ToolExecutor:
         else:
             out["proc_unavailable"] = True
         if out["new_files"] or out["new_processes"]:
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
+        return out
+
+    def _list_listening_ports(self) -> Optional[set]:
+        """Listening-socket snapshot via `ss -tln` (confirmed present on the
+        real target without sudo; `netstat` is a known fallback but `ss` is
+        hardcoded as the primary, no need to chain one). Returns normalized
+        "tcp:<port>" strings parsed from the Local Address:Port column.
+        Validity is structural -- a header line plus at least one well-formed
+        LISTEN row -- never "port 22 must be present," since a baseline read
+        that happens to catch a service before/after it binds is still valid.
+
+        No IP-based self-filter is needed here, unlike `_SSH_NOISE` (which
+        filters blue's own transient sshd process out of a `ps` snapshot): a
+        LISTEN-state socket is server-side state -- sshd is already listening
+        on 22 before blue's control session connects, and that connection
+        doesn't open a new listening socket, it uses the existing one. So
+        blue's own SSH-in traffic can't itself appear as a "new" port here.
+        """
+        raw = self.execute("ss -tln 2>/dev/null")
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if len(lines) < 2:
+            return None
+        ports = set()
+        for ln in lines[1:]:
+            fields = ln.split()
+            if len(fields) < 4 or fields[0] != "LISTEN":
+                continue
+            local = fields[3]
+            if ":" not in local:
+                continue
+            port = local.rsplit(":", 1)[1]
+            if port.isdigit():
+                ports.add(f"tcp:{port}")
+        return ports or None
+
+    def _list_users(self) -> Optional[set]:
+        """Full username list via `getent passwd | cut -d: -f1` -- reads the
+        same account database as `cat /etc/passwd` without the literal
+        substring `/etc/passwd`, which is in FORBIDDEN_KEYWORDS and would be
+        guard-blocked outside dojo mode. No dojo_exploit_ok gating needed, so
+        this sensor stays available in non-dojo runs. Validity is structural
+        (non-empty, one username per line) -- never "a specific username must
+        be present"."""
+        raw = self.execute("getent passwd | cut -d: -f1 2>/dev/null")
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        return set(lines) if lines else None
+
+    def investigate_box_anomalies(self) -> Dict[str, Any]:
+        """Catch-all posture sensor for two signals no other sensor owns: the
+        listening-port set and the full user-account list
+        (investigate_privileged_accounts only tracks uid-0 accounts). Diffs
+        each against the baseline captured at mark_analysis_window() -- a new
+        listening port or a new user account is itself breach evidence, the
+        same category as a new webroot file, so flag_access_detected is set
+        directly on a diff here (unlike investigate_ftp_sessions, which is
+        attribution-only)."""
+        out: Dict[str, Any] = {
+            "tool": "investigate_box_anomalies",
+            "new_ports": [],
+            "new_users": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
+        }
+        live_ports = self._list_listening_ports()
+        live_users = self._list_users()
+        # Ports and users are two independent signals; one side's
+        # baseline/read failing must not blind the other's diff.
+        ports_ok, new_ports = self._diff_baseline(self._ports_baseline, live_ports)
+        users_ok, new_users = self._diff_baseline(self._users_baseline, live_users)
+        if not ports_ok and not users_ok:
+            out["baseline_unavailable"] = True
+            return out
+        if ports_ok:
+            out["new_ports"] = new_ports
+        else:
+            out["ports_unavailable"] = True
+        if users_ok:
+            out["new_users"] = new_users
+        else:
+            out["users_unavailable"] = True
+        if out["new_ports"] or out["new_users"]:
             out["flag_access_detected"] = True
             out["assessment"] = "BREACH"
         return out
