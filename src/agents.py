@@ -610,6 +610,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_web_requests',
+                        'description': 'Attribution sensor for Apache access-log activity (web-exfil / SQLi dump family): parses request lines for a burst of requests to the payroll app from a foreign source IP. Attribution ONLY — does NOT set flag_access_detected; the log can\'t see the payload or the response, only that something hit the endpoint repeatedly. Returns bursts and foreign_ips.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_box_anomalies',
                         'description': 'Catch-all posture sensor for two signals no other sensor owns: the listening-port set and the full user-account list. Diffs each against the baseline captured at engagement start -- a NEW listening port or a NEW user account is itself breach evidence. Returns new_ports/new_users; BREACH / flag_access_detected means one of these appeared.',
                         'parameters': {'type': 'object', 'properties': {}, 'required': []},
@@ -1028,6 +1036,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_ftp_sessions", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_web_requests':
+            try:
+                return json.dumps(self.executor.investigate_web_requests())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_web_requests", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'contain_attacker':
             ip = tool_call['function']['arguments'].get('ip', "")
             if self.observe:
@@ -1290,6 +1304,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_cron",
     "investigate_network",
     "investigate_box_anomalies",
+    "investigate_web_requests",
 ]
 
 # Triage playbook: the sensors that CONFIRM and ATTRIBUTE an intrusion (source,

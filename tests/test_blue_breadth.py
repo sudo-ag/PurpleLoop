@@ -26,6 +26,7 @@ def test_breadth_rotates_to_least_recently_used():
         "investigate_cron",
         "investigate_network",
         "investigate_box_anomalies",
+        "investigate_web_requests",
         "investigate_logs",
     )]
     guidance = blue.tool_guidance(observe=True, confirmed_attackers=[], contained=False)
