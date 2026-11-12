@@ -635,6 +635,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_persistence',
+                        'description': 'Posture sensor for a planted SSH-key backdoor (MITRE T1098.004): diffs every account\'s ~/.ssh/authorized_keys against the baseline captured at engagement start. A key line present now but absent at window start, on ANY account, is a breach — this is the one persistence mechanism that survives remediate_account (a password lock does not block pubkey auth). Returns new_keys; BREACH / flag_access_detected means a key was planted. Use remove_persistence to strip it.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_ftp_sessions',
                         'description': 'Attribution sensor for FTP session activity (ProFTPD mod_copy family): parses session open/close lines for the foreign source IP and when it connected. Attribution/dwell-time ONLY — does NOT set flag_access_detected; a logged-in FTP session is not by itself evidence of compromise (use investigate_webshells for that). Returns sessions and foreign_ips.',
                         'parameters': {'type': 'object', 'properties': {}, 'required': []},
@@ -701,6 +709,23 @@ class Agent:
                                 'user': {
                                     'type': 'string',
                                     'description': 'The foothold account to strip of docker/sudo group access, e.g. "boba_fett".',
+                                },
+                            },
+                            'required': ['user'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'remove_persistence',
+                        'description': "Strip a planted SSH key out of an account's ~/.ssh/authorized_keys, keeping any pre-existing legitimate key. Call this once investigate_persistence reports a new key on an account — unlike remediate_account/revoke_escalation, this is safe and USEFUL to call on root (stripping root's own planted key is the point; it is not refused here). Takes a user argument.",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'user': {
+                                    'type': 'string',
+                                    'description': 'The account whose authorized_keys to clean, e.g. "root" or "chewbacca".',
                                 },
                             },
                             'required': ['user'],
@@ -1057,6 +1082,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_webshells", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_persistence':
+            try:
+                return json.dumps(self.executor.investigate_persistence())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_persistence", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'investigate_box_anomalies':
             try:
                 return json.dumps(self.executor.investigate_box_anomalies())
@@ -1110,6 +1141,16 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "revoke_escalation", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remove_persistence':
+            # Live even in observe mode, like remediate_account/revoke_escalation:
+            # observe holds the network block, not on-host responses.
+            user = tool_call['function']['arguments'].get('user', "")
+            try:
+                result = self.executor.remove_persistence(user)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
 
         return "Unsupported tool call."
 
@@ -1335,6 +1376,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_ftp_sessions",
     "investigate_users",
     "investigate_cron",
+    "investigate_persistence",
     "investigate_network",
     "investigate_box_anomalies",
     "investigate_web_requests",

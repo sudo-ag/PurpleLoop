@@ -149,3 +149,102 @@ def test_containment_is_still_held_in_observe():
         {"function": {"name": "contain_attacker", "arguments": {"ip": "192.168.64.11"}}})
     assert "containment held" in out
     ex.contain_attacker.assert_not_called()
+
+
+# --- remove_persistence: strips a planted SSH key, unlike its siblings does
+#     NOT refuse root (stripping root's planted key is the primary use case) --
+
+import base64  # noqa: E402
+
+
+def _ex_with_keys(baseline_lines: set, live_lines_by_path: dict) -> ToolExecutor:
+    """A ToolExecutor whose execute() serves a fixed authorized_keys read per
+    path and records every command it's called with, so a write command's
+    content can be decoded and checked."""
+    ex = ToolExecutor(host="192.168.64.12", user="vagrant", pwd="vagrant")
+    ex._authorized_keys_baseline = baseline_lines
+    ex._calls = []
+
+    def fake_execute(cmd, *a, **k):
+        ex._calls.append(cmd)
+        for path, content in live_lines_by_path.items():
+            if f"cat {path}" in cmd:
+                return content
+        return ""
+
+    ex.execute = fake_execute  # type: ignore[method-assign]
+    return ex
+
+
+def test_remove_persistence_refuses_defender_account():
+    ex = _ex_with_keys(set(), {})
+    r = ex.remove_persistence("vagrant")
+    assert r["assessment"] == "REFUSED" and r["removed"] is False
+
+
+def test_remove_persistence_refuses_option_like_name():
+    ex = _ex_with_keys(set(), {})
+    r = ex.remove_persistence("-foo")
+    assert r["assessment"] == "REFUSED" and r["removed"] is False
+
+
+def test_remove_persistence_does_not_refuse_root():
+    # root is in _PROTECTED_ACCOUNTS for remediate_account/revoke_escalation,
+    # but remove_persistence must NOT refuse it -- stripping root's own
+    # planted key is the primary use case.
+    ex = _ex_with_keys(
+        baseline_lines={"root:ssh-ed25519 AAAA legit"},
+        live_lines_by_path={"/root/.ssh/authorized_keys": "ssh-ed25519 AAAA legit"},
+    )
+    r = ex.remove_persistence("root")
+    assert r["assessment"] != "REFUSED"
+
+
+def test_remove_persistence_keeps_legit_drops_planted():
+    ex = _ex_with_keys(
+        baseline_lines={"lando_calrissian:ssh-ed25519 AAAA legit"},
+        live_lines_by_path={
+            "/home/lando_calrissian/.ssh/authorized_keys":
+                "ssh-ed25519 AAAA legit\nssh-ed25519 BBBB planted",
+        },
+    )
+    r = ex.remove_persistence("lando_calrissian")
+    assert r["removed"] is True and r["assessment"] == "REMOVED"
+    write_cmd = next(c for c in ex._calls if "base64 -d" in c)
+    b64 = write_cmd.split("echo ", 1)[1].split(" |", 1)[0]
+    written = base64.b64decode(b64).decode()
+    assert "ssh-ed25519 AAAA legit" in written
+    assert "ssh-ed25519 BBBB planted" not in written
+
+
+def test_remove_persistence_no_baseline_refuses():
+    ex = ToolExecutor(host="192.168.64.12", user="vagrant", pwd="vagrant")
+    ex._authorized_keys_baseline = None
+    ex._calls = []
+    ex.execute = lambda cmd, *a, **k: (ex._calls.append(cmd), "")[1]  # type: ignore[method-assign]
+    r = ex.remove_persistence("lando_calrissian")
+    assert r["removed"] is False
+    assert not any("tee" in c for c in ex._calls)
+
+
+# --- investigate_persistence / remove_persistence tool-use wiring ----------
+
+def test_investigate_persistence_wiring():
+    ex = MagicMock()
+    ex.investigate_persistence.return_value = {"tool": "investigate_persistence",
+                                                "assessment": "CLEAN"}
+    blue = Agent(role="blue", executor=ex)
+    out = blue.process_tool_call({"function": {"name": "investigate_persistence", "arguments": {}}})
+    ex.investigate_persistence.assert_called_once_with()
+    assert '"assessment": "CLEAN"' in out
+
+
+def test_remove_persistence_wiring():
+    ex = MagicMock()
+    ex.remove_persistence.return_value = {"tool": "remove_persistence",
+                                           "removed": True, "target_user": "chewbacca"}
+    blue = Agent(role="blue", executor=ex, observe=True)
+    out = blue.process_tool_call(
+        {"function": {"name": "remove_persistence", "arguments": {"user": "chewbacca"}}})
+    ex.remove_persistence.assert_called_once_with("chewbacca")
+    assert '"removed": true' in out

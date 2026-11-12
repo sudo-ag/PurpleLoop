@@ -184,10 +184,10 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
         behind would stop red from ever connecting next time);
       - the auth log (red's evasion scrubbing leaves it mangled across episodes;
         clearing it gives a clean per-episode baseline — blue's analysis window
-        already scopes correctness within an episode).
-
-    Persistence vectors (keys/cron/backdoors) are cleaned in a later increment,
-    once the earned game actually plants them and the cleanup can be tested.
+        already scopes correctness within an episode);
+      - any SSH key red planted into an account's authorized_keys (survives
+        remediate_account's password lock, so it must be cleaned explicitly
+        or it would persist across episodes forever).
     """
     actions: List[str] = []
     attacker_ip = getattr(red_ex, "jump_host", None)
@@ -252,6 +252,22 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     actions.append(
         "ensured /etc/passwd baseline (skipped if a pre-existing rogue account "
         "couldn't be cleared) and restored it if rogue uid0/corruption found"
+    )
+
+    # Any SSH key red planted survives remediate_account's password lock, so
+    # it would otherwise persist across episodes forever. Same capture-once
+    # baseline + restore-if-drifted pattern as the /etc/passwd block above,
+    # looped per-account over every existing authorized_keys file.
+    blue_ex.execute(
+        "sudo bash -c 'for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
+        "[ -f \"$f\" ] || continue; "
+        "b=\"$f.purpleloop-baseline\"; "
+        "[ -f \"$b\" ] || cp \"$f\" \"$b\"; "
+        "diff -q \"$f\" \"$b\" >/dev/null 2>&1 || cp \"$b\" \"$f\"; "
+        "done' 2>/dev/null; true"
+    )
+    actions.append(
+        "ensured per-account authorized_keys baseline and restored any planted key"
     )
 
     return {"episode": episode, "actions": actions}

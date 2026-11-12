@@ -1,3 +1,4 @@
+import base64
 import logging
 import subprocess
 import json
@@ -1414,6 +1415,51 @@ class ToolExecutor:
             findings["summary"] = f"Account '{user}' removed (home directory left intact)."
         else:
             findings["summary"] = f"Failed to remove '{user}': {out.strip()[:160]}"
+        return findings
+
+    def remove_persistence(self, user: str) -> Dict[str, Any]:
+        """Strip any SSH key planted in an account's ~/.ssh/authorized_keys
+        that isn't in the baseline captured at mark_analysis_window() --
+        surgical, never truncates the whole file. Unlike remediate_account/
+        revoke_escalation/remove_privileged_account, this does NOT refuse
+        `root`: stripping a planted key from root's own authorized_keys is
+        the primary use case (red escalating to root is exactly when
+        persistence matters most). Still refuses the defender's own account
+        and option-like names. Refuses outright if no trustworthy baseline
+        exists, rather than risk deleting a legitimate key."""
+        user = (user or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "remove_persistence", "target_user": user,
+            "removed": False, "assessment": "INFO", "summary": "",
+        }
+        if not user or not all(c.isalnum() or c in "_-" for c in user):
+            findings["summary"] = f"'{user}' is not a valid account name; nothing removed."
+            return findings
+        # leading "-" would be parsed by a shell command as an option
+        if user == self.user or user.startswith("-"):
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = f"Refused: '{user}' is the defender's own account or an option-like name."
+            return findings
+        if self._authorized_keys_baseline is None:
+            findings["summary"] = f"no baseline available; refusing to modify {user}'s keys"
+            return findings
+        home = "/root" if user == "root" else f"/home/{user}"
+        path = f"{home}/.ssh/authorized_keys"
+        raw = self.execute(f"sudo cat {path} 2>/dev/null")
+        live_lines = [ln for ln in raw.splitlines() if ln.strip()]
+        kept = [ln for ln in live_lines if f"{user}:{ln}" in self._authorized_keys_baseline]
+        if len(kept) == len(live_lines):
+            findings["assessment"] = "CLEAN"
+            findings["summary"] = f"no non-baseline keys found for {user}"
+            return findings
+        content = "\n".join(kept) + ("\n" if kept else "")
+        b64 = base64.b64encode(content.encode()).decode()
+        self.execute(f"echo {b64} | base64 -d | sudo tee {path} > /dev/null")
+        findings["removed"] = True
+        findings["assessment"] = "REMOVED"
+        findings["summary"] = (
+            f"stripped {len(live_lines) - len(kept)} non-baseline key(s) from {user}'s authorized_keys"
+        )
         return findings
 
     def _restore_revoked(self) -> None:
