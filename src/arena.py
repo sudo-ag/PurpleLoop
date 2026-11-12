@@ -306,7 +306,16 @@ def build_agents(
                 # Task 3 (family2-network-rce): a cold msfconsole module-cache
                 # load on the Kali jump box routinely exceeds the 60s default
                 # timeout, so give the attacker channel headroom.
-                attacker_ex = ToolExecutor(host=jump_host, user=jump_user, pwd=jump_pwd, timeout=300)
+                # dojo_exploit_ok matches blue_ex/red_ex above: without it, a
+                # red command chaining a meterpreter sub-command that merely
+                # references /etc/passwd (legitimate privesc recon the
+                # doctrine already sanctions) was blocked on this channel
+                # alone, even though the same text passes on the target
+                # channels.
+                attacker_ex = ToolExecutor(
+                    host=jump_host, user=jump_user, pwd=jump_pwd, timeout=300,
+                    dojo_exploit_ok=(host != "mock"),
+                )
         else:
             red_ex = blue_ex
     kp = REPO / "knowledge.json"

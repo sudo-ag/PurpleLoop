@@ -187,3 +187,14 @@ def test_build_agents_attacker_executor_has_raised_timeout():
     # Kali jump box blows past the 60s default, so attacker_ex needs headroom.
     red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False)
     assert red.attacker_executor.timeout >= 300
+
+
+def test_build_agents_attacker_executor_gets_dojo_exemption():
+    # blue_ex/red_ex both get dojo_exploit_ok=(host != "mock") so passwd/shadow
+    # keywords aren't blocked in the dojo sandbox -- attacker_ex was built
+    # without it, so a red doctrine command chaining a meterpreter sub-command
+    # that happens to reference /etc/passwd (legitimate privesc recon the
+    # doctrine already sanctions) was blocked on the attacker channel alone,
+    # even though the same text would pass on the target channels.
+    red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False)
+    assert red.attacker_executor.dojo_exploit_ok is True
