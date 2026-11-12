@@ -126,6 +126,7 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
             "contained_ip": g("contained_ip"),
         },
         "tiers": card.get("tiers"),
+        "blue_case": g("blue_case"),  # full store (leads + hypotheses), uncompacted
         "timeline": [_timeline_entry(h) for h in (g("history") or [])],
     }
 

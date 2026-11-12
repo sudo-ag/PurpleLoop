@@ -3,6 +3,7 @@ from ollama import Client
 from typing import Union, Dict, Any, List, Optional
 from src.executor import ToolExecutor
 from src.trajectory import Turn
+from src.case import new_case, add_lead, add_hypothesis, norm_confidence, current_hypothesis, cited_sensors, compact_view
 from pathlib import Path
 import json
 import re
@@ -56,7 +57,21 @@ You MUST use the blue investigation tools listed below to inspect the system.
 Do not explain your actions in text if you are calling a tool — call the tool, then
 in your next turn read its output and decide what to do next.
 
-INVESTIGATION WORKFLOW (only call ONE tool per turn):
+BUILD YOUR CASE AS YOU GO (this is how you think, not optional paperwork):
+- The MOMENT a sensor shows you anything notable, call `record_lead` for it
+  (sensor, one-line observation, confidence). One clue = one lead.
+- As soon as you hold TWO OR MORE leads, call `update_hypothesis` to state what
+  you now believe is happening and cite the lead ids that support it. Re-call it
+  whenever a new lead strengthens, changes, or contradicts your theory — your
+  hypothesis is a living thing you update, not a one-time guess.
+- Your case view is shown back to you each turn under "CASE FILE:" — read it,
+  and ask "does this new clue change my story?" before you move on.
+- ACT (contain/remediate) only on a hypothesis corroborated by leads from at
+  least TWO different sensors. A containment citing a single sensor is refused.
+
+INVESTIGATION WORKFLOW (only ONE *investigation* tool per turn — but
+`record_lead`/`update_hypothesis` are free note-taking: call them in the SAME
+turn, right after your investigation, to file what you just saw):
 
 Your PRIMARY check is `investigate_logs` — it is the only tool that reliably
 reveals a flag read (a sudo `cat /root/flag.txt` from the attacker). The attacker
@@ -518,6 +533,11 @@ def _coerce_text_tool_call(content: str) -> Optional[Dict[str, Any]]:
 
 
 class Agent:
+    # Blue's per-episode case file (leads + hypothesis), handed in by the
+    # orchestrator each blue turn. Declared at class level so a MagicMock(spec=Agent)
+    # recognizes it; the real value is an instance attribute set in __init__/reset.
+    case: "Optional[Dict[str, Any]]" = None
+
     def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None, knowledge_path: "Optional[Any]" = None):
         self.role = role
         self.executor = executor
@@ -532,6 +552,7 @@ class Agent:
         # The agent's OWN turn stream (its tool calls + outputs), independent of
         # the shared sim history. This is what a decoupled agent steers from.
         self.history: List[Turn] = []
+        self.case = None  # blue's case file; the orchestrator wires it each blue turn
         # Whether red has authenticated a foothold. Set by the game (and later by
         # red itself); lives on the base so the orchestrator's red-branch call is
         # safe for any agent instance.
@@ -756,6 +777,38 @@ class Agent:
                         },
                     },
                 },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'record_lead',
+                        'description': "Note-taking (not a sensor): file one clue into your case file so you can connect it to others across turns. Call it after a sensor returns something relevant. Args: sensor (the investigation that produced it, e.g. 'investigate_connections'), observation (what you saw, one line), confidence ('low'|'medium'|'high'). Returns the lead's id for later citation.",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'sensor': {'type': 'string', 'description': 'The sensor/tool that produced this clue.'},
+                                'observation': {'type': 'string', 'description': 'What you observed, one line.'},
+                                'confidence': {'type': 'string', 'description': "'low', 'medium', or 'high'."},
+                            },
+                            'required': ['sensor', 'observation'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'update_hypothesis',
+                        'description': "Note-taking (not a sensor): state your current working theory of what is happening, citing the leads that support it. Update it as new clues strengthen or change the story. Act (contain/remediate) only once your hypothesis is corroborated by leads from at least two different sensors. Args: claim (one line), confidence ('low'|'medium'|'high'), lead_ids (list of ints from record_lead).",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'claim': {'type': 'string', 'description': 'Your current theory, one line.'},
+                                'confidence': {'type': 'string', 'description': "'low', 'medium', or 'high'."},
+                                'lead_ids': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Ids of the leads that support this hypothesis.'},
+                            },
+                            'required': ['claim', 'lead_ids'],
+                        },
+                    },
+                },
             ]
         else:
             self.tools = [
@@ -820,6 +873,7 @@ class Agent:
         """Clear per-episode state so a reused agent starts each episode fresh.
         Knowledge (self.experience) PERSISTS — that is what compounds."""
         self.history = []
+        self.case = None
         self.has_foothold = False
         self._last_observation = ""
 
@@ -932,6 +986,10 @@ class Agent:
         """Assemble what this agent sees THIS turn — from its own state only."""
         obs = f"Turn {len(self.history)}. Current Role: {self.role}. History: {self._own_tail()}"
         obs += f"\n{self._role_guidance()}"
+        # Blue reads its own running case each turn (compacted view; the full store
+        # is never trimmed). This is what lets it connect a new clue to the story.
+        if self.role == "blue" and self.case and self.case.get("leads"):
+            obs += "\n" + compact_view(self.case)
         obs += self.repeat_nudge()
         return obs
 
@@ -1131,18 +1189,7 @@ class Agent:
                 return json.dumps({"tool": "investigate_web_requests", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'contain_attacker':
-            ip = tool_call['function']['arguments'].get('ip', "")
-            if self.observe:
-                # Training mode: don't actually firewall the attacker — let it
-                # proceed so blue can keep observing. Reported as a held action.
-                return json.dumps({"tool": "contain_attacker", "status": "observed",
-                                   "contained": False, "target_ip": ip,
-                                   "note": "observe mode: containment held for training"})
-            try:
-                result = self.executor.contain_attacker(ip)
-                return json.dumps(result)
-            except Exception as e:
-                return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
+            return self._dispatch_contain_attacker(tool_call['function'].get('arguments', {}))
 
         elif tool_call['function']['name'] == 'remediate_account':
             # Unlike contain_attacker, remediation is LIVE even in observe mode:
@@ -1176,7 +1223,66 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
 
+        elif tool_call['function']['name'] == 'record_lead':
+            return self._dispatch_record_lead(tool_call['function'].get('arguments', {}))
+
+        elif tool_call['function']['name'] == 'update_hypothesis':
+            return self._dispatch_update_hypothesis(tool_call['function'].get('arguments', {}))
+
         return "Unsupported tool call."
+
+    # --- Case/story note-taking (blue): mutate the shared case at dispatch time,
+    # so a later tool call in the SAME turn (e.g. contain_attacker) sees the update.
+    def _dispatch_record_lead(self, args: Dict[str, Any]) -> str:
+        try:
+            if self.case is None:
+                self.case = new_case()
+            lead_id = add_lead(
+                self.case, args["sensor"], args.get("observation", ""),
+                norm_confidence(args.get("confidence")), len(self.history),
+            )
+            return json.dumps({"tool": "record_lead", "id": lead_id, "status": "ok"})
+        except Exception as e:
+            return json.dumps({"tool": "record_lead", "status": "error", "error": str(e)})
+
+    def _dispatch_update_hypothesis(self, args: Dict[str, Any]) -> str:
+        try:
+            lead_ids = args.get("lead_ids", [])
+            if not isinstance(lead_ids, list) or not all(isinstance(i, int) for i in lead_ids):
+                return json.dumps({"tool": "update_hypothesis", "status": "error",
+                                   "error": "lead_ids must be a list of ints"})
+            if self.case is None:
+                self.case = new_case()
+            add_hypothesis(self.case, args.get("claim", ""),
+                           norm_confidence(args.get("confidence")), lead_ids, len(self.history))
+            return json.dumps({"tool": "update_hypothesis", "status": "ok"})
+        except Exception as e:
+            return json.dumps({"tool": "update_hypothesis", "status": "error", "error": str(e)})
+
+    def _dispatch_contain_attacker(self, args: Dict[str, Any]) -> str:
+        ip = args.get('ip', "")
+        # Thin-evidence floor: block a containment whose cited leads (the current
+        # hypothesis's) all come from a single sensor. Multi-sensor sufficiency stays
+        # blue's judgment; this is only a floor against the dumbest false positive.
+        # No hypothesis / no cited leads => unchanged (backward compatible).
+        hyp = current_hypothesis(self.case) if self.case else None
+        cited = hyp["lead_ids"] if hyp else []
+        if cited and len(cited_sensors(self.case, cited)) < 2:
+            return json.dumps({"tool": "contain_attacker", "status": "blocked_thin_evidence",
+                               "contained": False, "ip": ip, "cited_leads": cited,
+                               "note": "needs corroboration from >=2 sensors"})
+        if self.observe:
+            # Training mode: don't actually firewall the attacker — let it proceed so
+            # blue can keep observing. Reported as a held action.
+            return json.dumps({"tool": "contain_attacker", "status": "observed",
+                               "contained": False, "target_ip": ip, "ip": ip,
+                               "cited_leads": cited,
+                               "note": "observe mode: containment held for training"})
+        try:
+            result = self.executor.contain_attacker(ip)
+            return json.dumps(result)
+        except Exception as e:
+            return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
 
     def summarize_experience(self, history: List[Dict[str, Any]], outcome: Optional[str] = None) -> Optional[str]:
         """
@@ -1430,7 +1536,10 @@ BLUE_TRIAGE_GUIDANCE = {
     "ATTRIBUTE": (
         "ATTRIBUTE — the attacker is confirmed. Fix the source IP and identify "
         "the compromised account and technique from your findings, then stage "
-        "the response."
+        "the response. Build your case as you go (record_lead / update_hypothesis) "
+        "and act (contain/remediate) only on a hypothesis corroborated by leads "
+        "from at least two different sensors — a containment citing a single "
+        "sensor is refused."
     ),
     "IDENTIFY": (
         "IDENTIFY / NEUTRALIZE — a foothold has landed and root is one command away "

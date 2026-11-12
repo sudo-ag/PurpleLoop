@@ -6,6 +6,7 @@ import os
 import re
 import difflib
 from src.agents import Agent
+from src.case import new_case
 from src.referee import (
     Referee,
     TIER_FOOTHOLD,
@@ -98,6 +99,7 @@ class SimulationState:
     escalation_auto_revoked: bool = False  # blue's reflex stripped the foothold account's escalation path
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
     red_persistence_planted_turn: Optional[int] = None  # turn red planted an SSH-key backdoor (no tier -- a detection/defense surface on top of whatever tier red already holds)
+    blue_case: Dict[str, Any] = field(default_factory=new_case)  # blue's per-episode case file (leads + hypotheses)
 
 class Orchestrator:
     def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False, remediate_grace: int = 0):
@@ -514,6 +516,9 @@ class Orchestrator:
         # so only on blue's turn — applying on red's turn would preempt its window).
         if role == "blue":
             self._apply_staged_remediation()
+            # Hand blue the case file it builds/reasons over (same object the
+            # orchestrator persists on state, so same-turn note-taking is visible).
+            self.blue_agent.case = self.state.blue_case
 
         # Notify dashboard of turn start
         self._notify_dashboard("turn_update", {"turn": self.state.turn, "winner": None})
