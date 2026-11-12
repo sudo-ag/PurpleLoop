@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from src.agents import Agent, RED_EARNED_ADDENDUM
+from src.agents import Agent, RED_EARNED_ADDENDUM, RED_EVASION_ADDENDUM
 from src.orchestrator import (
     Orchestrator,
     TIER_FOOTHOLD,
@@ -537,3 +537,10 @@ def test_persistence_planted_does_not_double_credit():
     orch.state.current_agent_role = "red"
     orch.step()
     assert orch.state.red_persistence_planted_turn == first_turn
+
+
+# --- evasion doctrine no longer assumes handed NOPASSWD root ---------------
+
+def test_evasion_doctrine_does_not_assume_handed_root():
+    assert "You have root (NOPASSWD sudo)" not in RED_EVASION_ADDENDUM
+    assert "id" in RED_EVASION_ADDENDUM or "whoami" in RED_EVASION_ADDENDUM
