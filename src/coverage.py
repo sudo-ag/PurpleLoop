@@ -139,7 +139,7 @@ VECTORS: List[Dict[str, Any]] = [
      "red_reach": _sqli_exfil_red, "blue_detect": _sqli_exfil_blue},
     {"name": "proftpd_modcopy", "tier": TIER_FOOTHOLD, "status": "active",
      "red_reach": _proftpd_red, "blue_detect": _webshells_breach},
-    {"name": "drupal_drupalgeddon2", "tier": TIER_FOOTHOLD, "status": "active",
+    {"name": "drupal_rce", "tier": TIER_FOOTHOLD, "status": "active",
      "red_reach": _drupal_red, "blue_detect": _webshells_breach},
     {"name": "ssh_key_persistence", "tier": None, "status": "active",
      "red_reach": _persistence_red, "blue_detect": _blue_sensor_breach("investigate_persistence")},

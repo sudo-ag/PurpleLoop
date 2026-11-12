@@ -81,10 +81,10 @@ def test_docker_breakout_red_reach_does_not_fire_without_mount_flag():
     assert _vec("docker_breakout")["red_reach"](entry) is False
 
 
-# --- proftpd_modcopy / drupal_drupalgeddon2 share one blue_detect object ---
+# --- proftpd_modcopy / drupal_rce share one blue_detect object ---
 
 def test_proftpd_and_drupal_share_the_same_blue_detect_function_object():
-    assert _vec("proftpd_modcopy")["blue_detect"] is _vec("drupal_drupalgeddon2")["blue_detect"]
+    assert _vec("proftpd_modcopy")["blue_detect"] is _vec("drupal_rce")["blue_detect"]
 
 
 def test_shared_blue_detect_fires_on_investigate_webshells_breach():
@@ -92,7 +92,7 @@ def test_shared_blue_detect_fires_on_investigate_webshells_breach():
                        "flag_access_detected": True, "assessment": "BREACH"})
     entry = {"role": "blue", "name": "investigate_webshells", "args": {}, "output": out}
     assert _vec("proftpd_modcopy")["blue_detect"](entry) is True
-    assert _vec("drupal_drupalgeddon2")["blue_detect"](entry) is True
+    assert _vec("drupal_rce")["blue_detect"](entry) is True
 
 
 # --- not_attempted vectors: always False, never fabricated -----------------

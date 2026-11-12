@@ -15,7 +15,7 @@ def test_proftpd_module_string_is_exact():
 
 def test_drupal_module_string_is_exact():
     assert (
-        CAPABILITY_CATALOG[1].msf_module == "exploit/unix/webapp/drupal_drupalgeddon2"
+        CAPABILITY_CATALOG[1].msf_module == "exploit/multi/http/drupal_drupageddon"
     )
 
 

