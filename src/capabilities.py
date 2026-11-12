@@ -35,4 +35,22 @@ CAPABILITY_CATALOG: list[ServiceCapability] = [
             "command's output returns in the HTTP response."
         ),
     ),
+    ServiceCapability(
+        service_pattern="Drupal",
+        msf_module="exploit/unix/webapp/drupal_drupalgeddon2",
+        preconditions=(
+            "Fingerprint Drupal yourself from recon (CHANGELOG.txt, a sites/default "
+            "tree, /user/login, or a Drupal-looking listing) and READ its version "
+            "off the box, AND confirm it is a vulnerable Drupal 7.x (before 7.58). "
+            "Never assume the version."
+        ),
+        tradecraft_notes=(
+            "Drive msfconsole non-interactively via run_on_attacker with RHOSTS, "
+            "RPORT 80 (unless recon found another port), TARGETURI set to the path "
+            "your own listing showed Drupal served from (never a hardcoded guess), "
+            "PAYLOAD cmd/unix/generic, and CMD id. The payload auto-enables "
+            "DUMP_OUTPUT, so genuine `uid=...` output in the dumped HTTP body is the "
+            "RCE proof. msf's success banner or session line is not."
+        ),
+    ),
 ]
