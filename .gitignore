@@ -7,6 +7,8 @@ simulation.log
 battle_report.md
 knowledge.json
 episodes.jsonl
+coverage_matrix.json
+coverage_matrix.md
 
 # Vagrant / Metasploitable3 target VM (6+ GB, provisioned locally, never committed)
 .vagrant/

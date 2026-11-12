@@ -10,7 +10,9 @@ blue_tier_detect/live scoring.
 See docs/superpowers/specs/2026-11-12-purpleloop-coverage-matrix-design.md
 for the full per-vector rule table this module implements.
 """
+import argparse
 import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -187,3 +189,76 @@ def aggregate(per_episode: List[Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[st
         prevented = None if not judged else (True if any(judged) else False)
         result[name] = {"reached": reached, "detected": detected, "prevented": prevented}
     return result
+
+
+def build_matrix(episodes_dir: str = "episode_reports") -> Dict[str, Any]:
+    """Scan every ep_*.json under episodes_dir, classify and aggregate."""
+    paths = sorted(Path(episodes_dir).glob("ep_*.json"))
+    per_episode = []
+    for p in paths:
+        try:
+            ep_data = json.loads(p.read_text())
+        except Exception:
+            continue
+        per_episode.append(classify_episode(ep_data))
+    agg = aggregate(per_episode)
+    vectors_out = {v["name"]: {**agg[v["name"]], "status": v["status"]} for v in VECTORS}
+    return {"vectors": vectors_out, "episodes_scanned": [p.name for p in paths]}
+
+
+def _symbol(value: Optional[bool]) -> str:
+    return "✅" if value is True else ("❌" if value is False else "—")
+
+
+def write_outputs(
+    matrix: Dict[str, Any],
+    json_path: str = "coverage_matrix.json",
+    md_path: str = "coverage_matrix.md",
+) -> None:
+    """Write the full matrix as JSON, and a rendered markdown table (with
+    an explicit note for every not_attempted vector) to md_path."""
+    Path(json_path).write_text(json.dumps(matrix, indent=2))
+
+    lines = [
+        "# Coverage Matrix",
+        "",
+        f"Episodes scanned: {len(matrix['episodes_scanned'])}",
+        "",
+        "| vector | red reaches | blue detects | blue prevents |",
+        "|---|---|---|---|",
+    ]
+    not_attempted_notes = []
+    for name, v in matrix["vectors"].items():
+        reach = "✅" if v["reached"] else "—"
+        detect = "✅" if v["detected"] else "—"
+        prevent = _symbol(v["prevented"])
+        lines.append(f"| {name} | {reach} | {detect} | {prevent} |")
+        if v["status"] == "not_attempted":
+            not_attempted_notes.append(f"- `{name}` — not attempted this project (see HANDOFF.md)")
+    if not_attempted_notes:
+        lines.append("")
+        lines.extend(not_attempted_notes)
+    Path(md_path).write_text("\n".join(lines) + "\n")
+
+
+def main() -> None:
+    p = argparse.ArgumentParser(description="PurpleLoop coverage matrix")
+    p.add_argument("--episodes-dir", default="episode_reports")
+    p.add_argument("--out-json", default="coverage_matrix.json")
+    p.add_argument("--out-md", default="coverage_matrix.md")
+    a = p.parse_args()
+    matrix = build_matrix(a.episodes_dir)
+    write_outputs(matrix, a.out_json, a.out_md)
+    vectors = matrix["vectors"]
+    total = len(vectors)
+    reached_n = sum(1 for v in vectors.values() if v["reached"])
+    detected_n = sum(1 for v in vectors.values() if v["detected"])
+    prevented_n = sum(1 for v in vectors.values() if v["prevented"] is True)
+    print(
+        f"coverage: {reached_n}/{total} vectors reached, {detected_n}/{total} detected, "
+        f"{prevented_n} prevented"
+    )
+
+
+if __name__ == "__main__":
+    main()

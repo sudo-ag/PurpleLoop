@@ -2,12 +2,16 @@
 already-recorded episode timelines, reusing existing stateless orchestrator
 checks wherever one already exists for a vector."""
 import json
+import tempfile
+from pathlib import Path
 
 from src.coverage import (
     VECTORS,
     _as_tool_call,
     classify_episode,
     aggregate,
+    build_matrix,
+    write_outputs,
 )
 from src.orchestrator import TIER_FOOTHOLD, TIER_EXFIL, TIER_ROOT
 
@@ -171,3 +175,75 @@ def test_aggregate_prevented_none_when_never_judged():
     ep1 = {"ssh_brute": {"reached": False, "detected": False, "prevented": None}}
     agg = aggregate([ep1])
     assert agg["ssh_brute"]["prevented"] is None
+
+
+# --- build_matrix ------------------------------------------------------------
+
+def _write_ep(dir_path: Path, filename: str, timeline, tiers) -> None:
+    (dir_path / filename).write_text(json.dumps({"timeline": timeline, "tiers": tiers}))
+
+
+def test_build_matrix_scans_and_aggregates_real_files():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        red_out = json.dumps({"tool": "use_credential", "status": "success", "user": "x"})
+        _write_ep(d, "ep_001.json",
+                   timeline=[{"turn": 0, "role": "red", "name": "use_credential", "args": {}, "output": red_out}],
+                   tiers=[{"tier": TIER_FOOTHOLD, "name": "foothold", "reached_turn": 0,
+                           "detect_turn": 1, "dwell": 1, "defended": True}])
+        _write_ep(d, "ep_002.json", timeline=[], tiers=[])
+        matrix = build_matrix(str(d))
+        assert matrix["episodes_scanned"] == ["ep_001.json", "ep_002.json"]
+        assert matrix["vectors"]["ssh_brute"]["reached"] is True
+        assert matrix["vectors"]["ssh_brute"]["status"] == "active"
+        assert matrix["vectors"]["sambacry"]["status"] == "not_attempted"
+
+
+def test_build_matrix_empty_dir_is_not_an_error():
+    with tempfile.TemporaryDirectory() as d:
+        matrix = build_matrix(d)
+        assert matrix["episodes_scanned"] == []
+        for v in matrix["vectors"].values():
+            assert v["reached"] is False and v["detected"] is False and v["prevented"] is None
+
+
+# --- write_outputs ------------------------------------------------------------
+
+def _sample_matrix() -> dict:
+    return {
+        "episodes_scanned": ["ep_001.json"],
+        "vectors": {
+            "ssh_brute": {"reached": True, "detected": True, "prevented": True, "status": "active"},
+            "dirtycow": {"reached": False, "detected": False, "prevented": None, "status": "active"},
+            "sambacry": {"reached": False, "detected": False, "prevented": None, "status": "not_attempted"},
+            "sinatra_placeholder": {"reached": False, "detected": False, "prevented": None, "status": "not_attempted"},
+            "phpmyadmin_preg_replace": {"reached": False, "detected": False, "prevented": None, "status": "not_attempted"},
+        },
+    }
+
+
+def test_write_outputs_json_round_trips():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        write_outputs(_sample_matrix(), str(d / "m.json"), str(d / "m.md"))
+        loaded = json.loads((d / "m.json").read_text())
+        assert loaded == _sample_matrix()
+
+
+def test_write_outputs_markdown_has_right_symbols():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        write_outputs(_sample_matrix(), str(d / "m.json"), str(d / "m.md"))
+        md = (d / "m.md").read_text()
+        assert "ssh_brute" in md and "✅" in md
+        assert "dirtycow" in md and "—" in md
+
+
+def test_write_outputs_annotates_every_not_attempted_vector():
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        write_outputs(_sample_matrix(), str(d / "m.json"), str(d / "m.md"))
+        md = (d / "m.md").read_text()
+        for name in ("sambacry", "sinatra_placeholder", "phpmyadmin_preg_replace"):
+            assert name in md
+            assert "not attempted" in md.lower()
