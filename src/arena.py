@@ -26,7 +26,7 @@ from src.agents import Agent, RedAgent, BlueAgent
 from src.executor import ToolExecutor, _is_ipv4
 from src.mock_executor import MockExecutor
 from src.orchestrator import Orchestrator
-from src.debrief import build_debrief
+from src.debrief import build_debrief, make_polish
 
 REPO = Path(__file__).resolve().parent.parent
 EPISODES_PATH = REPO / "episodes.jsonl"
@@ -358,6 +358,7 @@ def run_episodes(
     reset: bool = True,
     episodes_path: Path = EPISODES_PATH,
     reports_dir: Path = REPORTS_DIR,
+    narrate: bool = False,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary."""
@@ -367,6 +368,9 @@ def run_episodes(
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
     red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe)
+    # --narrate: polish each debrief into prose via the driver model (reuses
+    # blue's client). None (default) keeps the deterministic, reproducible report.
+    polish = make_polish(blue.client, blue.model) if narrate else None
 
     cards: List[Dict[str, Any]] = []
     for i in range(1, n + 1):
@@ -388,7 +392,7 @@ def run_episodes(
         report_path = reports_dir / f"ep_{i:03d}.md"
         try:
             report_path.write_text(
-                compose_episode_report(orch.generate_report(), orch.state, card),
+                compose_episode_report(orch.generate_report(), orch.state, card, polish),
                 encoding="utf-8",
             )
             card["report"] = str(report_path)
@@ -436,13 +440,14 @@ def main() -> None:
     p.add_argument("--detect-within-turns", type=int, default=3)
     p.add_argument("--remediate-grace", type=int, default=4, help="Turns blue's account lock is held after red's foothold, giving red a window to escalate (0 = instant lock). ~2 raw turns per red window-turn due to red/blue alternation, so 4 ≈ two escalation turns.")
     p.add_argument("--no-reset", action="store_true", help="Skip the scripted between-episode reset")
+    p.add_argument("--narrate", action="store_true", help="Polish each agent's debrief into LLM prose (non-deterministic). Off = deterministic, reproducible report.")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
         user=a.user, pwd=a.pwd, jump_host=a.jump_host, jump_user=a.jump_user,
         jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned, observe=a.observe,
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
-        reset=not a.no_reset,
+        reset=not a.no_reset, narrate=a.narrate,
     )
 
 

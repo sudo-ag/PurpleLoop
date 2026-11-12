@@ -24,6 +24,20 @@ def build_debrief(role: str, state: Any, card: Dict[str, Any],
         return skeleton
 
 
+def make_polish(client: Any, model: str) -> Callable[[str, str], str]:
+    """Build a polish callable that asks `model` to rewrite a debrief skeleton as
+    prose. It must NOT invent facts; errors/empties are absorbed by build_debrief."""
+    def polish(skeleton: str, role: str) -> str:
+        prompt = (
+            f"Rewrite this {role}-team episode debrief as flowing, first-person prose. "
+            "Keep all four sections and their headings. Do NOT add any fact, number, "
+            "or event that is not already present in the text below.\n\n" + skeleton
+        )
+        resp = client.chat(model=model, messages=[{"role": "user", "content": prompt}])
+        return resp["message"]["content"]
+    return polish
+
+
 def _skeleton(role: str, state: Any, card: Dict[str, Any]) -> str:
     label = ROLE_LABEL.get(role, role.capitalize())
     parts: List[str] = [
