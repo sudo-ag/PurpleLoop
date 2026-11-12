@@ -416,8 +416,10 @@ If recon turns up a Drupal site (a web root with `CHANGELOG.txt`, a
 like Drupal), READ ITS VERSION off whatever your own recon turned up — the first
 line of `CHANGELOG.txt`, the page's generator meta, or the listing itself. WHICH
 version is running is a FACT ABOUT THE BOX you read, never a given. Drupalgeddon2
-(CVE-2018-7600) hits Drupal 7.x before 7.58 and 8.x before 8.5.1; confirm the box
-is in range before reaching for it.
+(CVE-2018-7600) hits Drupal 7.x before 7.58; confirm the box is in that range
+before reaching for it. (Drupal 8.x is also named by this CVE upstream, but this
+doctrine is scoped to the concretely-verified 7.x evidence path only — don't
+reach for this module against an 8.x box.)
 
 IF — and only if — recon confirms a vulnerable Drupal 7.x version, turn it into
 command execution with Metasploit's real drupalgeddon2 module. msfconsole is on
