@@ -26,6 +26,7 @@ from src.agents import Agent, RedAgent, BlueAgent
 from src.executor import ToolExecutor, _is_ipv4
 from src.mock_executor import MockExecutor
 from src.orchestrator import Orchestrator
+from src.debrief import build_debrief
 
 REPO = Path(__file__).resolve().parent.parent
 EPISODES_PATH = REPO / "episodes.jsonl"
@@ -127,8 +128,18 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
         },
         "tiers": card.get("tiers"),
         "blue_case": g("blue_case"),  # full store (leads + hypotheses), uncompacted
+        "red_lesson": g("red_lesson"),
+        "blue_lesson": g("blue_lesson"),
         "timeline": [_timeline_entry(h) for h in (g("history") or [])],
     }
+
+
+def compose_episode_report(base_report: str, state: Any, card: Dict[str, Any],
+                           polish: Optional[Callable[[str, str], str]] = None) -> str:
+    """The factual board (base_report) followed by each agent's debrief."""
+    red = build_debrief("red", state, card, polish)
+    blue = build_debrief("blue", state, card, polish)
+    return f"{base_report}\n\n{red}\n\n{blue}\n"
 
 
 def summarize(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -376,7 +387,10 @@ def run_episodes(
         # actually happened in each episode.
         report_path = reports_dir / f"ep_{i:03d}.md"
         try:
-            report_path.write_text(orch.generate_report(), encoding="utf-8")
+            report_path.write_text(
+                compose_episode_report(orch.generate_report(), orch.state, card),
+                encoding="utf-8",
+            )
             card["report"] = str(report_path)
         except Exception as e:
             print(f"[episode {i}] could not write report: {e}")
