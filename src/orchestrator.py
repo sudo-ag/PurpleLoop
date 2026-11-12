@@ -100,6 +100,8 @@ class SimulationState:
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
     red_persistence_planted_turn: Optional[int] = None  # turn red planted an SSH-key backdoor (no tier -- a detection/defense surface on top of whatever tier red already holds)
     blue_case: Dict[str, Any] = field(default_factory=new_case)  # blue's per-episode case file (leads + hypotheses)
+    red_lesson: Optional[str] = None   # red's per-episode reflect() takeaway (for the debrief)
+    blue_lesson: Optional[str] = None  # blue's per-episode reflect() takeaway (for the debrief)
 
 class Orchestrator:
     def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False, remediate_grace: int = 0):
@@ -876,6 +878,8 @@ class Orchestrator:
         print("\nSimulation ended. Agents are now reflecting on the battle...")
         red_lesson = self.red_agent.reflect(self._outcome_brief("red"))
         blue_lesson = self.blue_agent.reflect(self._outcome_brief("blue"))
+        self.state.red_lesson = red_lesson
+        self.state.blue_lesson = blue_lesson
         if red_lesson:
             print(f"Red learned: {red_lesson}")
         if blue_lesson:
