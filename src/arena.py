@@ -134,11 +134,20 @@ def build_replay(state: Any, card: Dict[str, Any], episode: int,
     }
 
 
+def _safe_debrief(role: str, state: Any, card: Dict[str, Any],
+                  polish: Optional[Callable[[str, str], str]]) -> str:
+    """A debrief failure must never take down the factual board it rides below."""
+    try:
+        return build_debrief(role, state, card, polish)
+    except Exception as e:
+        return f"## {role.capitalize()} Debrief\n\n_(debrief unavailable: {e})_"
+
+
 def compose_episode_report(base_report: str, state: Any, card: Dict[str, Any],
                            polish: Optional[Callable[[str, str], str]] = None) -> str:
     """The factual board (base_report) followed by each agent's debrief."""
-    red = build_debrief("red", state, card, polish)
-    blue = build_debrief("blue", state, card, polish)
+    red = _safe_debrief("red", state, card, polish)
+    blue = _safe_debrief("blue", state, card, polish)
     return f"{base_report}\n\n{red}\n\n{blue}\n"
 
 

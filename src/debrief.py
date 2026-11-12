@@ -9,6 +9,37 @@ from typing import Any, Callable, Dict, List, Optional
 
 ROLE_LABEL = {"red": "🔴 Red", "blue": "🔵 Blue"}
 
+# Plain-language phrasing for the "Actions taken" narration (spec: one
+# plain-language line per action, not a raw tool name).
+_TOOL_PHRASE = {
+    "execute_command": "ran a command on the target",
+    "use_credential": "logged in with a discovered credential",
+    "run_on_attacker": "worked from my attacker box",
+    "investigate_logs": "reviewed the auth and sudo logs",
+    "investigate_connections": "checked inbound network connections",
+    "investigate_processes": "inspected running processes",
+    "investigate_file_access": "checked access to the sensitive file",
+    "investigate_network": "scanned for unexpected listeners",
+    "investigate_docker": "checked container-escape posture",
+    "investigate_privileged_accounts": "audited privileged accounts",
+    "investigate_webshells": "checked the web root for web shells",
+    "investigate_persistence": "checked for planted SSH keys",
+    "investigate_box_anomalies": "profiled the box for anomalies",
+    "investigate_ftp_sessions": "reviewed FTP session activity",
+    "investigate_web_requests": "reviewed web-server access logs",
+    "contain_attacker": "firewalled the attacker's IP",
+    "remediate_account": "locked the compromised account",
+    "revoke_escalation": "stripped the account's escalation path",
+    "remove_persistence": "removed a planted SSH key",
+    "remove_privileged_account": "deleted a rogue privileged account",
+    "record_lead": "filed a lead in my case file",
+    "update_hypothesis": "updated my working hypothesis",
+}
+
+
+def _phrase(name: str) -> str:
+    return _TOOL_PHRASE.get(name, f"used {name}")
+
 
 def build_debrief(role: str, state: Any, card: Dict[str, Any],
                   polish: Optional[Callable[[str, str], str]] = None) -> str:
@@ -19,7 +50,7 @@ def build_debrief(role: str, state: Any, card: Dict[str, Any],
         return skeleton
     try:
         out = polish(skeleton, role)
-        return out or skeleton
+        return out if (out and out.strip()) else skeleton  # never emit a blank/whitespace debrief
     except Exception:
         return skeleton
 
@@ -100,7 +131,7 @@ def _history_actions(state: Any, role: str) -> str:
         if "tool" in h:
             name = ((h.get("tool") or {}).get("function", {}) or {}).get("name")
             if name:
-                lines.append(f"- {name}")
+                lines.append(f"- I {_phrase(name)}.")
     return "\n".join(lines)
 
 
