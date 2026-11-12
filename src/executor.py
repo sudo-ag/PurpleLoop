@@ -691,6 +691,7 @@ class ToolExecutor:
         self._users_baseline = None
         if self.dojo_exploit_ok:  # getent passwd is guard-blocked outside the dojo ("passwd" keyword)
             self._users_baseline = self._capture_baseline(self._list_users)
+        self._authorized_keys_baseline = self._capture_baseline(self._list_authorized_keys)
 
     @staticmethod
     def _capture_baseline(fn: Callable[[], Optional[set]]) -> Optional[set]:
@@ -771,6 +772,53 @@ class ToolExecutor:
         if not any(ln.startswith(prefix) for ln in lines):
             return None
         return {ln[len(prefix):] if ln.startswith(prefix) else ln.lstrip("/") for ln in lines}
+
+    def _list_authorized_keys(self) -> Optional[set]:
+        """Snapshot of every account's ~/.ssh/authorized_keys content, as
+        "<account>:<key-line>" strings, for /root and every /home/*
+        directory -- account-agnostic, since at mark_analysis_window() time
+        blue doesn't yet know which account red will land on (earned-foothold
+        model). Enumerates home directories directly rather than reading
+        /etc/passwd, so this needs no dojo_exploit_ok gating and runs against
+        the real target. A trailing PL_OK sentinel distinguishes "ran, found
+        zero keys" (a common, valid baseline -- the defender logs in by
+        password, not key) from "command failed": only the sentinel's
+        presence/absence decides None vs. a (possibly empty) set."""
+        raw = self.execute(
+            "sudo bash -c 'for d in /root /home/*; do "
+            "u=$(basename \"$d\"); f=\"$d/.ssh/authorized_keys\"; "
+            "[ -f \"$f\" ] && while IFS= read -r l; do "
+            "[ -n \"$l\" ] && echo \"$u:$l\"; done < \"$f\"; "
+            "done; echo PL_OK' 2>/dev/null"
+        )
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        if "PL_OK" not in lines:
+            return None
+        return {ln for ln in lines if ln != "PL_OK"}
+
+    def investigate_persistence(self) -> Dict[str, Any]:
+        """Posture sensor for a planted SSH-key backdoor: diffs every
+        account's ~/.ssh/authorized_keys against the baseline captured at
+        mark_analysis_window(). A key line present live but absent from the
+        baseline, on any account, is a breach -- this survives blue's own
+        remediate_account (a password lock, which does not block pubkey
+        auth)."""
+        out: Dict[str, Any] = {
+            "tool": "investigate_persistence",
+            "new_keys": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
+        }
+        live = self._list_authorized_keys()
+        ok, new_keys = self._diff_baseline(self._authorized_keys_baseline, live)
+        if not ok:
+            out["baseline_unavailable"] = True
+            return out
+        if new_keys:
+            out["new_keys"] = new_keys
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
+        return out
 
     # Blue's own SSH exec session (and any sftp transfer) shows up in `ps` as a
     # transient sshd/sftp-server process; filtered by command string (not pid,
