@@ -484,3 +484,56 @@ def test_verdict_reports_top_tier_and_defenses():
 
 def test_verdict_no_tier_reached():
     assert _orch().verdict() == "red reached no tier; blue had nothing to defend"
+
+
+# --- red SSH-key persistence (honest plant signal, no new tier) -----------
+
+PERSISTENCE_READBACK_SUCCESS = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGZhbWlseTVwbGFudGVka2V5dGVzdHZhbHVl pl_key"
+)
+
+
+def test_persistence_planted_credits_on_real_readback():
+    orch = _orch()
+    assert orch._check_red_persistence_planted(
+        _tool("execute_command"), PERSISTENCE_READBACK_SUCCESS
+    ) is True
+
+
+def test_persistence_planted_denied_does_not_credit():
+    orch = _orch()
+    out = "mkdir: cannot create directory '/home/lando_calrissian/.ssh': Permission denied"
+    assert orch._check_red_persistence_planted(_tool("execute_command"), out) is False
+
+
+def test_persistence_planted_error_output_does_not_credit():
+    orch = _orch()
+    assert orch._check_red_persistence_planted(_tool("execute_command"), "") is False
+    assert orch._check_red_persistence_planted(
+        _tool("execute_command"), "bash: command not found"
+    ) is False
+
+
+def test_persistence_planted_credits_through_real_step():
+    red, blue = MagicMock(), MagicMock()
+    tc = _tool("execute_command")
+    red.act.return_value = [tc]
+    red.process_tool_call.return_value = PERSISTENCE_READBACK_SUCCESS
+    orch = Orchestrator(red, blue, max_tools_per_turn=1)
+    orch.state.current_agent_role = "red"
+    orch.step()
+    assert orch.state.red_persistence_planted_turn is not None
+
+
+def test_persistence_planted_does_not_double_credit():
+    red, blue = MagicMock(), MagicMock()
+    tc = _tool("execute_command")
+    red.act.return_value = [tc]
+    red.process_tool_call.return_value = PERSISTENCE_READBACK_SUCCESS
+    orch = Orchestrator(red, blue, max_tools_per_turn=1)
+    orch.state.current_agent_role = "red"
+    orch.step()
+    first_turn = orch.state.red_persistence_planted_turn
+    orch.state.current_agent_role = "red"
+    orch.step()
+    assert orch.state.red_persistence_planted_turn == first_turn
