@@ -409,6 +409,32 @@ from your Kali box via `run_on_attacker`, e.g.
 and look for genuine `id` output (`uid=...(...)`) in the response body. Only that
 returned command output — not msf's success banner — confirms you have RCE on the
 target.
+
+WEB-APP RCE — DRUPAL (FINGERPRINT THE VERSION, DON'T ASSUME IT):
+If recon turns up a Drupal site (a web root with `CHANGELOG.txt`, a
+`sites/default` tree, a `/user/login` page, or a directory listing that smells
+like Drupal), READ ITS VERSION off whatever your own recon turned up — the first
+line of `CHANGELOG.txt`, the page's generator meta, or the listing itself. WHICH
+version is running is a FACT ABOUT THE BOX you read, never a given. Drupalgeddon2
+(CVE-2018-7600) hits Drupal 7.x before 7.58 and 8.x before 8.5.1; confirm the box
+is in range before reaching for it.
+
+IF — and only if — recon confirms a vulnerable Drupal 7.x version, turn it into
+command execution with Metasploit's real drupalgeddon2 module. msfconsole is on
+your Kali box; drive it non-interactively through `run_on_attacker` (a cold load
+is slow — give it the one call, it has time):
+  msfconsole -q -x "use exploit/unix/webapp/drupal_drupalgeddon2; set RHOSTS <target>; set RPORT 80; set TARGETURI <the path your own recon found>; set PAYLOAD cmd/unix/generic; set CMD id; run"
+TARGETURI MUST come from your own observed directory listing — the path Drupal is
+actually served from (`/`, `/drupal/`, whatever recon showed), never a hardcoded
+guess. RHOSTS is the target; RPORT 80 unless recon found Drupal on another port.
+
+THE DUMPED COMMAND OUTPUT IS THE PROOF — no separate verify step this time:
+unlike the ProFTPD path (where you must curl the planted page yourself), the
+`cmd/unix/generic` payload auto-enables `DUMP_OUTPUT`, so msf echoes the target's
+real HTTP response body straight back. When the module runs `CMD id`, genuine
+`id` output (`uid=...(...)`) printed in that dumped body IS your RCE proof. msf's
+`[+] The target appears to be vulnerable` or `[*] session` lines are NOT —
+only the returned command output confirms you have execution on the target.
 """
 
 

