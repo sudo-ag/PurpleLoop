@@ -263,11 +263,15 @@ def test_webshell_and_drupal_gates_overlap_credits_t1_exactly_once():
     # Both pure checks match the same evidence...
     assert orch._check_red_tier1_via_webshell(overlap, out) is True
     assert orch._check_red_tier1_via_drupal_rce(overlap, out) is True
-    # ...but the loop records T1 once: the webshell check sets it, then the
-    # shared `TIER_FOOTHOLD not in red_tiers` guard makes the drupal check skip.
-    # A single `red_tiers` entry (no overwrite, no KeyError) is the proof.
+    # ...but the loop records T1 once: the webshell check (wired first) sets it,
+    # then the shared `TIER_FOOTHOLD not in red_tiers` guard short-circuits the
+    # drupal check so it is never even invoked. Spy on it to prove that: this
+    # assertion FAILS if the shared guard is removed and both checks run.
+    drupal_spy = MagicMock(wraps=orch._check_red_tier1_via_drupal_rce)
+    orch._check_red_tier1_via_drupal_rce = drupal_spy
     orch.step()
-    assert list(orch.state.red_tiers) == [TIER_FOOTHOLD]
+    assert TIER_FOOTHOLD in orch.state.red_tiers
+    drupal_spy.assert_not_called()
 
 
 def test_doctrine_does_not_hardcode_targeturi_path():
