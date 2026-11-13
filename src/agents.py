@@ -68,6 +68,12 @@ BUILD YOUR CASE AS YOU GO (this is how you think, not optional paperwork):
   and ask "does this new clue change my story?" before you move on.
 - ACT (contain/remediate) only on a hypothesis corroborated by leads from at
   least TWO different sensors. A containment citing a single sensor is refused.
+- To audit a box for weaknesses nobody pre-wrote a sensor for, run
+  `investigate_escalation_paths`. It returns only deviations from known-good,
+  each carrying a file path. CHAIN them: a writable file that a root-scheduled
+  job executes is a privilege-escalation path — file the pieces with
+  record_lead and connect them with update_hypothesis. An "unavailable"
+  category is a blind spot, never an all-clear.
 
 INVESTIGATION WORKFLOW (only ONE *investigation* tool per turn — but
 `record_lead`/`update_hypothesis` are free note-taking: call them in the SAME
@@ -688,6 +694,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_escalation_paths',
+                        'description': 'General privilege-escalation POSTURE scan (read-only, not tied to one known vuln — use it to find a path on a box nobody pre-wired a sensor for). Enumerates SUID/SGID binaries, file capabilities, world-writable files/dirs, scheduled jobs (cron + systemd), and package-integrity deltas (dpkg -V), returning ONLY deviations from known-good: a binary owned by no package or whose hash changed, a GTFOBins-shellable SUID, a dangerous capability, a writable file, a root-scheduled job. Each finding carries its file path. CHAIN them — a writable file that a root-scheduled job executes is a privesc path: file the relevant pieces with record_lead and connect a writable item to the root-scheduled item that runs it with update_hypothesis. A category marked "unavailable" is a blind spot, NOT an all-clear.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_ftp_sessions',
                         'description': 'Attribution sensor for FTP session activity (ProFTPD mod_copy family): parses session open/close lines for the foreign source IP and when it connected. Attribution/dwell-time ONLY — does NOT set flag_access_detected; a logged-in FTP session is not by itself evidence of compromise (use investigate_webshells for that). Returns sessions and foreign_ips.',
                         'parameters': {'type': 'object', 'properties': {}, 'required': []},
@@ -1170,6 +1184,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_persistence", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_escalation_paths':
+            try:
+                return json.dumps(self.executor.investigate_escalation_paths())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_escalation_paths", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'investigate_box_anomalies':
             try:
                 return json.dumps(self.executor.investigate_box_anomalies())
@@ -1510,6 +1530,7 @@ BLUE_TOOL_PRIORITY = [
     "investigate_network",
     "investigate_box_anomalies",
     "investigate_web_requests",
+    "investigate_escalation_paths",
 ]
 
 # Triage playbook: the sensors that CONFIRM and ATTRIBUTE an intrusion (source,
