@@ -6,6 +6,7 @@ privileged binary owned by no package, or whose package hash deviated, is a
 flag) — no distro allowlist, so this generalizes to any Debian/RPM host. The
 tool only flags facts; blue chains them into privesc paths via the case engine.
 """
+import re
 from typing import Dict, List, Set
 
 # Binaries that trivially spawn a shell when SUID/privileged (GTFOBins-style).
@@ -80,16 +81,23 @@ def parse_scheduled(cron_output: str, systemd_timer_output: str) -> List[Dict[st
         if not ln or ln.startswith("#"):
             continue
         parts = ln.split()
-        # system crontab line: 5 time fields, user, command...
-        if len(parts) >= 7 and parts[5] == "root" and parts[6].startswith("/"):
+        if parts[0].startswith("@"):
+            # @reboot/@daily root /path ...
+            if len(parts) >= 3 and parts[1] == "root" and parts[2].startswith("/"):
+                out.append(finding("scheduled", parts[2], "root", "runs-as-root-scheduled", ln))
+        elif len(parts) >= 7 and parts[5] == "root" and parts[6].startswith("/"):
+            # 5 time fields, user, command...
             out.append(finding("scheduled", parts[6], "root", "runs-as-root-scheduled", ln))
     for ln in systemd_timer_output.splitlines():
         ln = ln.strip()
-        if ln.startswith("ExecStart="):
-            cmd = ln[len("ExecStart="):].strip()
-            path = cmd.split()[0] if cmd else ""
-            if path.startswith("/"):
-                out.append(finding("scheduled", path, "root", "runs-as-root-scheduled", ln))
+        if not ln.startswith("ExecStart="):
+            continue
+        rest = ln[len("ExecStart="):].strip()
+        # real `systemctl show` format is "{ path=/x ; argv[]=... }"; also accept "/x --flag"
+        m = re.search(r"path=(\S+)", rest)
+        path = m.group(1) if m else (rest.split()[0] if rest else "")
+        if path.startswith("/"):
+            out.append(finding("scheduled", path, "root", "runs-as-root-scheduled", ln))
     return out
 
 
@@ -117,4 +125,7 @@ def parse_package_integrity(dpkg_verify_output: str) -> List[Dict[str, str]]:
         if "5" in flags:
             out.append(finding("package_integrity", parts[-1], "root", "hash-delta",
                                "file deviates from its package's known-good hash"))
+        elif "M" in flags:
+            out.append(finding("package_integrity", parts[-1], "root", "mode-change",
+                               "file mode deviates from its package (possible added SUID)"))
     return out

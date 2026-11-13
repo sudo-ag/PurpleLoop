@@ -1,4 +1,5 @@
 import base64
+import shlex
 import logging
 import subprocess
 import json
@@ -792,18 +793,27 @@ class ToolExecutor:
                 cats[name] = {"status": "unavailable", "findings": []}
                 return
             f = parser(body)
-            cats[name] = {"status": "findings" if f else "clean", "findings": f}
+            cats[name] = {"status": "findings" if f else "clean", "findings": f[:100]}
             findings.extend(f)
 
-        # SUID/SGID -- flagged by package provenance + GTFOBins
-        suid_body = run(f"find / -xdev \\( -perm -4000 -o -perm -2000 \\) -type f {nodir} 2>/dev/null; echo __PL_END__")
+        # SUID/SGID -- flagged by package provenance + GTFOBins. No -xdev, so SUIDs
+        # on separately-mounted /opt, /home, /var are not missed.
+        suid_body = run(f"find / \\( -perm -4000 -o -perm -2000 \\) -type f {nodir} 2>/dev/null; echo __PL_END__")
         if suid_body is None:
             cats["suid"] = {"status": "unavailable", "findings": []}
         else:
             paths = parse_suid(suid_body)
-            prov = run("dpkg -S " + " ".join(paths) + " 2>/dev/null; echo __PL_END__") if paths else ""
-            f = flag_suid(paths, parse_owned_paths(prov or ""), GTFOBINS, check_provenance=prov is not None)
-            cats["suid"] = {"status": "findings" if f else "clean", "findings": f}
+            # Keep paths that would trip FORBIDDEN_KEYWORDS (e.g. /usr/bin/passwd,
+            # /usr/bin/gpasswd) out of the shelled-out provenance query -- they are
+            # standard system SUIDs, never the "thing nobody wrote a rule for".
+            safe = [p for p in paths if not any(k in p for k in self.FORBIDDEN_KEYWORDS)]
+            prov = run(
+                "if command -v dpkg >/dev/null 2>&1; then dpkg -S "
+                + " ".join(shlex.quote(p) for p in safe)
+                + " 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__"
+            ) if safe else ""
+            f = flag_suid(safe, parse_owned_paths(prov or ""), GTFOBINS, check_provenance=prov is not None)
+            cats["suid"] = {"status": "findings" if f else "clean", "findings": f[:100]}
             findings.extend(f)
 
         # package integrity -- the generalizing backbone (no allowlist)
@@ -816,20 +826,26 @@ class ToolExecutor:
             run("if command -v getcap >/dev/null 2>&1; then getcap -r / 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__"),
             parse_capabilities)
 
-        # world-writable files/dirs (weak-principal-writable)
+        # world-writable files/dirs (weak-principal-writable). Expected-writable
+        # dirs (/tmp, /var/tmp, /dev/shm, /run, ...) are excluded as de-noise.
+        wx = (f"{nodir} -not -path '/tmp/*' -not -path '/var/tmp/*' -not -path '/dev/shm/*' "
+              "-not -path '/run/*' -not -path '/var/run/*' -not -path '/var/lock/*'")
         add("writable",
-            run(f"find / -xdev -perm -0002 \\( -type f -o -type d \\) {nodir} -not -path '/tmp/*' 2>/dev/null; echo __PL_END__"),
+            run(f"find / -perm -0002 \\( -type f -o -type d \\) {wx} 2>/dev/null; echo __PL_END__"),
             parse_writable)
 
-        # scheduled execution (root cron + systemd units) -- two sources, one category
+        # scheduled execution (root cron + systemd units) -- two sources, one
+        # category. A partial read (one source failed) is NOT reported clean.
         cron_body = run("cat /etc/crontab /etc/cron.d/* 2>/dev/null; echo __PL_END__")
         sysd_body = run("if command -v systemctl >/dev/null 2>&1; then systemctl show '*.service' -p ExecStart 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__")
-        if cron_body is None and sysd_body is None:
+        sched = parse_scheduled(cron_body or "", sysd_body or "")
+        if sched:
+            cats["scheduled"] = {"status": "findings", "findings": sched[:100]}
+            findings.extend(sched)
+        elif cron_body is None or sysd_body is None:
             cats["scheduled"] = {"status": "unavailable", "findings": []}
         else:
-            f = parse_scheduled(cron_body or "", sysd_body or "")
-            cats["scheduled"] = {"status": "findings" if f else "clean", "findings": f}
-            findings.extend(f)
+            cats["scheduled"] = {"status": "clean", "findings": []}
 
         result = {"tool": "investigate_escalation_paths", "categories": cats,
                   "findings": findings[:100],
