@@ -41,16 +41,19 @@ def parse_owned_paths(dpkg_search_output: str) -> Set[str]:
     return owned
 
 
-def flag_suid(suid_paths: List[str], owned: Set[str], gtfobins: frozenset) -> List[Dict[str, str]]:
+def flag_suid(suid_paths: List[str], owned: Set[str], gtfobins: frozenset,
+              check_provenance: bool = True) -> List[Dict[str, str]]:
     """Flag a SUID path when it can spawn a shell (GTFOBins basename) or is owned
-    by no package. A normal, package-owned, non-GTFOBins binary is boring -> dropped."""
+    by no package. A normal, package-owned, non-GTFOBins binary is boring -> dropped.
+    When provenance couldn't be read (`check_provenance=False`), only the GTFOBins
+    check runs, so a missing package DB never false-flags every SUID as unowned."""
     out: List[Dict[str, str]] = []
     for path in suid_paths:
         base = path.rsplit("/", 1)[-1]
         if base in gtfobins:
             out.append(finding("suid", path, "any", "gtfobins-shellable",
                                f"SUID {base} can spawn a shell"))
-        elif path not in owned:
+        elif check_provenance and path not in owned:
             out.append(finding("suid", path, "any", "unowned-suid",
                                "SUID binary owned by no package"))
     return out
