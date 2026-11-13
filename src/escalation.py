@@ -56,6 +56,52 @@ def flag_suid(suid_paths: List[str], owned: Set[str], gtfobins: frozenset) -> Li
     return out
 
 
+def parse_writable(find_output: str) -> List[Dict[str, str]]:
+    """Writable paths (the `find` call already filtered to world/group-writable).
+    Each carries its path so blue can match it to a scheduled-job lead."""
+    out: List[Dict[str, str]] = []
+    for ln in find_output.splitlines():
+        p = ln.strip()
+        if p.startswith("/"):
+            out.append(finding("writable", p, "non-root", "world-or-group-writable",
+                               "writable by a non-root principal"))
+    return out
+
+
+def parse_scheduled(cron_output: str, systemd_timer_output: str) -> List[Dict[str, str]]:
+    """Root-run scheduled jobs. The finding's `item` is the executed file path —
+    the SAME path a writable finding carries — so blue can chain the two."""
+    out: List[Dict[str, str]] = []
+    for ln in cron_output.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        parts = ln.split()
+        # system crontab line: 5 time fields, user, command...
+        if len(parts) >= 7 and parts[5] == "root" and parts[6].startswith("/"):
+            out.append(finding("scheduled", parts[6], "root", "runs-as-root-scheduled", ln))
+    for ln in systemd_timer_output.splitlines():
+        ln = ln.strip()
+        if ln.startswith("ExecStart="):
+            cmd = ln[len("ExecStart="):].strip()
+            path = cmd.split()[0] if cmd else ""
+            if path.startswith("/"):
+                out.append(finding("scheduled", path, "root", "runs-as-root-scheduled", ln))
+    return out
+
+
+def parse_capabilities(getcap_output: str) -> List[Dict[str, str]]:
+    """Files carrying a privilege-relevant capability (cap_setuid etc.), not every cap."""
+    out: List[Dict[str, str]] = []
+    for ln in getcap_output.splitlines():
+        if " = " not in ln:
+            continue
+        path, caps = ln.split(" = ", 1)
+        if any(c in caps for c in _DANGEROUS_CAPS):
+            out.append(finding("capability", path.strip(), "any", "dangerous-capability", caps.strip()))
+    return out
+
+
 def parse_package_integrity(dpkg_verify_output: str) -> List[Dict[str, str]]:
     """Each `dpkg -V` line whose flag column carries a '5' (md5 mismatch) is a
     file that deviated from its package's known-good hash."""
