@@ -24,6 +24,36 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-12 — richer-blue arc: ②/③/① + escalation sensor)
+
+Shifted from "add more attacks" to "make the defender generalize." Three
+deliverables (②→③→①) plus a follow-on general sensor:
+- **② Blue case/story engine — MERGED.** Blue builds an explicit case file
+  (leads + working hypothesis) via `record_lead`/`update_hypothesis`, reasons
+  over a compacted view each turn, and acts on the connected picture (a
+  single-sensor containment is floored). Live-proven: `gemma4:31b-cloud` filed
+  7 leads + 4 evolving hypotheses in one episode. No new scoring tier.
+- **③ Per-agent episode debrief — MERGED.** Each `ep_NNN.md` ends with
+  first-person 🔴/🔵 debriefs (exec summary → actions → learned → next);
+  deterministic by default, `--narrate` for optional LLM prose. Blue's debrief
+  narrates its case. New `src/debrief.py`.
+- **① Battle replayer — rebuilt + published, NOT finished.** `battle_replay.html`
+  reworked into a premium GBA/beach battle that narrates ②'s case moves and
+  closes on ③'s debrief screen. Published as an artifact. AI-generated anime
+  sprites are PENDING a `KIE_AI_API_KEY` (user to set); hand-SVG creatures stand
+  in meanwhile. Can't clone actual Pokémon sprites (copyright).
+- **Escalation-paths sensor — BUILT, branch `escalation-paths`, NOT merged.**
+  The first general-purpose investigation tool: `investigate_escalation_paths`
+  read-only enumerates privesc posture (SUID/caps/sudo/world-writable/scheduled/
+  package-integrity), flags only deviations from known-good (package provenance
+  first — `dpkg -V` — no distro allowlist, so it generalizes), and emits
+  path-carrying candidate leads blue chains into privesc paths via ②. No new
+  scoring tier. 504 tests; final review's 2 Criticals + Importants fixed.
+  **HELD for live validation (boxes were down); merge after Task 5.**
+
+Pending: run the escalation sensor live when `.11`/`.12` return (Task 5, then
+merge); set a kie.ai key to generate the replay's anime sprites.
+
 ## Current scope (set 2026-11-05, supersedes the per-CVE framing below)
 
 The ambition grew: the end goal is **versatile red/blue agents deployable on
