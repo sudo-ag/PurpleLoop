@@ -1,4 +1,5 @@
 import base64
+import shlex
 import logging
 import subprocess
 import json
@@ -9,6 +10,10 @@ import atexit
 import datetime
 import time
 from typing import Callable, List, Optional, Dict, Any, Tuple
+from src.escalation import (
+    GTFOBINS, parse_suid, parse_owned_paths, flag_suid, parse_package_integrity,
+    parse_writable, parse_scheduled, parse_capabilities,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -327,6 +332,9 @@ class ToolExecutor:
         self.analysis_since_epoch: Optional[int] = None
         # Names at uid 0 when the window opened; only accounts added after count.
         self._uid0_baseline: Optional[set] = None
+        # Cached per-episode escalation-paths posture scan (host-wide find is
+        # expensive; scan once, reuse within the episode). Cleared each window.
+        self._escalation_cache: Optional[Dict[str, Any]] = None
         # Web root file listing + process-tree snapshot at window open, for the
         # webshell-planting sensor (investigate_webshells).
         self._webroot_baseline: Optional[set] = None
@@ -681,6 +689,7 @@ class ToolExecutor:
         else:
             logger.info("Blue analysis window starts at target wall clock %s.", out)
         self._detect_control_source_ip()
+        self._escalation_cache = None  # fresh posture scan per episode
         self._uid0_baseline = None
         if self.dojo_exploit_ok:  # passwd read is guard-blocked outside the dojo
             uid0 = self._capture_baseline(self._uid0_accounts)
@@ -757,6 +766,92 @@ class ToolExecutor:
             out.update(rogue_accounts=rogue, suspicious_users=rogue,
                        flag_access_detected=True, assessment="BREACH")
         return out
+
+    def investigate_escalation_paths(self) -> Dict[str, Any]:
+        """General privilege-escalation posture scan (read-only). Flags only
+        DEVIATIONS from known-good (package provenance first), per category, and
+        emits each as a candidate lead carrying its file path, so blue can chain a
+        writable file to the root-scheduled job that runs it. The tool never joins
+        or ranks -- that is blue's reasoning. Cached per episode (host-wide find is
+        expensive); an unreadable category reports `unavailable`, never `clean`."""
+        if self._escalation_cache is not None:
+            return self._escalation_cache
+        cats: Dict[str, Any] = {}
+        findings: List[Dict[str, str]] = []
+        nodir = "-not -path '/proc/*' -not -path '/sys/*'"
+
+        def run(cmd: str) -> Optional[str]:
+            # Returns the command body, or None if it did not complete (no end
+            # sentinel) or the tool was absent -- which maps to `unavailable`.
+            raw = self.execute(cmd)
+            if "__PL_ABSENT__" in raw or "__PL_END__" not in raw:
+                return None
+            return raw.split("__PL_END__")[0]
+
+        def add(name: str, body: Optional[str], parser) -> None:
+            if body is None:
+                cats[name] = {"status": "unavailable", "findings": []}
+                return
+            f = parser(body)
+            cats[name] = {"status": "findings" if f else "clean", "findings": f[:100]}
+            findings.extend(f)
+
+        # SUID/SGID -- flagged by package provenance + GTFOBins. No -xdev, so SUIDs
+        # on separately-mounted /opt, /home, /var are not missed.
+        suid_body = run(f"find / \\( -perm -4000 -o -perm -2000 \\) -type f {nodir} 2>/dev/null; echo __PL_END__")
+        if suid_body is None:
+            cats["suid"] = {"status": "unavailable", "findings": []}
+        else:
+            paths = parse_suid(suid_body)
+            # Keep paths that would trip FORBIDDEN_KEYWORDS (e.g. /usr/bin/passwd,
+            # /usr/bin/gpasswd) out of the shelled-out provenance query -- they are
+            # standard system SUIDs, never the "thing nobody wrote a rule for".
+            safe = [p for p in paths if not any(k in p for k in self.FORBIDDEN_KEYWORDS)]
+            prov = run(
+                "if command -v dpkg >/dev/null 2>&1; then dpkg -S "
+                + " ".join(shlex.quote(p) for p in safe)
+                + " 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__"
+            ) if safe else ""
+            f = flag_suid(safe, parse_owned_paths(prov or ""), GTFOBINS, check_provenance=prov is not None)
+            cats["suid"] = {"status": "findings" if f else "clean", "findings": f[:100]}
+            findings.extend(f)
+
+        # package integrity -- the generalizing backbone (no allowlist)
+        add("package_integrity",
+            run("if command -v dpkg >/dev/null 2>&1; then dpkg -V 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__"),
+            parse_package_integrity)
+
+        # file capabilities
+        add("capability",
+            run("if command -v getcap >/dev/null 2>&1; then getcap -r / 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__"),
+            parse_capabilities)
+
+        # world-writable files/dirs (weak-principal-writable). Expected-writable
+        # dirs (/tmp, /var/tmp, /dev/shm, /run, ...) are excluded as de-noise.
+        wx = (f"{nodir} -not -path '/tmp/*' -not -path '/var/tmp/*' -not -path '/dev/shm/*' "
+              "-not -path '/run/*' -not -path '/var/run/*' -not -path '/var/lock/*'")
+        add("writable",
+            run(f"find / -perm -0002 \\( -type f -o -type d \\) {wx} 2>/dev/null; echo __PL_END__"),
+            parse_writable)
+
+        # scheduled execution (root cron + systemd units) -- two sources, one
+        # category. A partial read (one source failed) is NOT reported clean.
+        cron_body = run("cat /etc/crontab /etc/cron.d/* 2>/dev/null; echo __PL_END__")
+        sysd_body = run("if command -v systemctl >/dev/null 2>&1; then systemctl show '*.service' -p ExecStart 2>/dev/null; else echo __PL_ABSENT__; fi; echo __PL_END__")
+        sched = parse_scheduled(cron_body or "", sysd_body or "")
+        if sched:
+            cats["scheduled"] = {"status": "findings", "findings": sched[:100]}
+            findings.extend(sched)
+        elif cron_body is None or sysd_body is None:
+            cats["scheduled"] = {"status": "unavailable", "findings": []}
+        else:
+            cats["scheduled"] = {"status": "clean", "findings": []}
+
+        result = {"tool": "investigate_escalation_paths", "categories": cats,
+                  "findings": findings[:100],
+                  "assessment": "FINDINGS" if findings else "CLEAN"}
+        self._escalation_cache = result
+        return result
 
     def _list_webroot(self) -> Optional[set]:
         """Recursive snapshot of /var/www/html as paths relative to the web root.
