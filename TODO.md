@@ -49,10 +49,16 @@ deliverables (②→③→①) plus a follow-on general sensor:
   first — `dpkg -V` — no distro allowlist, so it generalizes), and emits
   path-carrying candidate leads blue chains into privesc paths via ②. No new
   scoring tier. 504 tests; final review's 2 Criticals + Importants fixed.
-  **HELD for live validation (boxes were down); merge after Task 5.**
+  **LIVE-VALIDATED + MERGED (2026-11-15).** Ran on real `.12`: `suid`/
+  `capability` clean (no false-positive on owned SUID), `package_integrity`/
+  `scheduled` → `unavailable` under vagrant (fail-safe), `writable` surfaced the
+  real Sinatra privesc chain. In-loop autonomous chain (Step 3) not yet
+  exercised — blue didn't select the sensor that episode (honest variance).
 
-Pending: run the escalation sensor live when `.11`/`.12` return (Task 5, then
-merge); set a kie.ai key to generate the replay's anime sprites.
+Pending: set a kie.ai key to generate the replay's anime sprites. Optional
+escalation follow-ups: a doctrine nudge + re-run to see the in-loop chain fire
+(Step 3); gate/drop the always-`unavailable` categories (`package_integrity`/
+`scheduled`) and the sticky-bit (`/tmp`, `/var/tmp`) writable noise.
 
 ## Current scope (set 2026-11-05, supersedes the per-CVE framing below)
 
