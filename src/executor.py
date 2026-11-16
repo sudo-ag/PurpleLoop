@@ -1518,6 +1518,33 @@ class ToolExecutor:
         return {**out, "status": "closed", "fix": fix,
                 "summary": f"Closed {cat} vector at {item} (reversible)."}
 
+    def remediate_escalation_surface(self) -> Dict[str, Any]:
+        """Close the WHOLE writable/SUID escalation surface in one sweep: scan the
+        host, then remediate_finding every writable and SUID finding. Closing all
+        of them means whatever vector the attacker reaches for is already shut,
+        forcing a pivot to another class. Reuses the per-finding closer (reversible,
+        fail-safe, refuses host/defender paths); reports what it closed vs skipped."""
+        scan = self.investigate_escalation_paths()
+        cats = scan.get("categories", {}) if isinstance(scan, dict) else {}
+        closed: List[Dict[str, str]] = []
+        skipped: List[Dict[str, str]] = []
+        for name in ("writable", "suid"):
+            for f in cats.get(name, {}).get("findings", []):
+                item = f.get("item")
+                if not item:
+                    continue
+                r = self.remediate_finding({"category": name, "item": item})
+                if r.get("status") == "closed":
+                    closed.append({"category": name, "item": item})
+                else:
+                    skipped.append({"category": name, "item": item, "status": r.get("status")})
+        return {
+            "tool": "remediate_escalation_surface",
+            "closed": closed,
+            "skipped": skipped,
+            "summary": f"Closed {len(closed)} escalation vector(s); {len(skipped)} skipped.",
+        }
+
     def revoke_escalation(self, user: str) -> Dict[str, Any]:
         """Preemptive least-privilege: strip a foothold account of the privileged
         group memberships (docker/sudo/…) that would let it escalate to root, and
