@@ -24,6 +24,35 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-16 — self-sudo fix, portable lessons, vector remediation)
+
+Diagnostic-driven continuation of the richer-blue arc (ran repeated earned+observe
+learning batches to see how the agents actually behave, then fixed what broke):
+
+- **(a) Blue self-sudo confusion — FIXED, merged, pushed.** Blue no longer names
+  its own `vagrant` control-account recon as the attacker. Live: vagrant-as-
+  attacker lessons 3/5 → 0/5.
+- **(b) Box-specific lessons — FIXED, merged, pushed.** Reflection now writes a
+  role-based **transferable rule**, not this-box trivia (prevents hallucination
+  on a new host). Live: leaked identifiers 7 → 0.
+- **(c) Vector-specific remediation (paintball arms race) — Phase A merged+pushed,
+  Phase B merged (unpushed).** Blue can CLOSE a privesc vector (make writable
+  paths non-writable / strip SUID) instead of only banning — `remediate_finding`
+  (one vector) + `remediate_escalation_surface` (the whole writable/SUID surface
+  in one sweep). Reversible; `scripted_reset` re-vulnerabilises so the box stays
+  attackable; `vector_stops` scoring. Live-proven: blue closed
+  `writable@/etc/init/sinatra.conf`. 537 tests.
+  Spec/plan: `docs/superpowers/{specs,plans}/2026-11-15-*vector-remediation*`.
+
+**NEXT ARC (the gate that unblocks the whole loop): make blue CONFIRM an earned
+foothold.** `confirmed_attackers` needs evidence of malice (port scan / ≥5 failed
+auths / flag access); a quietly cracked-cred login trips none, so against a
+stealthy red blue never enters its response phase and never closes a vector. Treat
+a successful non-control login as a confirmed attacker (false-positive tradeoff is
+its own call). Then: observe red actually PIVOT (Phase B step 3), then reactive
+targeting (close red's *active* vector, not the whole surface). Also still pending:
+`KIE_AI_API_KEY` for the battle-replayer sprites.
+
 ## Latest status (2026-11-12 — richer-blue arc: ②/③/① + escalation sensor)
 
 Shifted from "add more attacks" to "make the defender generalize." Three
