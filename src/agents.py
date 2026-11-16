@@ -1747,6 +1747,9 @@ class BlueAgent(Agent):
     def _ran_escalation_check(self) -> bool:
         return "investigate_docker" in self._tools_used()
 
+    def _ran_escalation_scan(self) -> bool:
+        return "investigate_escalation_paths" in self._tools_used()
+
     def _revoked_escalation(self) -> bool:
         return "revoke_escalation" in self._tools_used()
 
@@ -1795,6 +1798,22 @@ class BlueAgent(Agent):
                 f"— it strips docker/sudo and applies immediately, so red's next "
                 f"command cannot escalate. Do NOT `remediate_account` first (that lags "
                 f"behind a grace window) and do NOT investigate yet — REVOKE NOW."
+            )
+
+        # HARDEN — in observe (training) mode the network ban is held, so instead
+        # of only documenting, blue closes the BROADER privesc surface
+        # (writable/SUID) so red can't simply escalate another way. This is the
+        # paintball move: close the vector WITHOUT banning, forcing a pivot. In
+        # non-observe blue ends the episode by containing, so this is observe-only.
+        if (observe and confirmed_attackers and self._attacker_account()
+                and not self._ran_escalation_scan()):
+            return (
+                "Blue guidance: You cut the account's group-based escalation. Now "
+                "close the REST of its escalation surface: call "
+                "`investigate_escalation_paths`, then `remediate_finding` on each "
+                "writable or SUID finding it reports to harden those vectors. This "
+                "closes the hole WITHOUT banning the attacker, forcing them to find "
+                "another way in — do it even while holding network containment."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only
