@@ -1330,6 +1330,19 @@ class Agent:
                     "or containment. Never give offensive advice.",
         }.get(self.role.lower(), "")
 
+        # The lesson is injected into future episodes — possibly on a different
+        # host. A lesson naming THIS box's accounts/IPs/versions would not
+        # transfer and would make the agent act on entities that do not exist
+        # there (hallucination). Force a role-based, portable rule.
+        generalize = (
+            "Write it as a TRANSFERABLE RULE that stays correct on a completely "
+            "different host: refer to the other side and to any account, IP, host, "
+            "path, or software version by its ROLE (e.g. 'the attacker's source IP', "
+            "'the compromised foothold account', 'the host's kernel version'), "
+            "never by a specific value from this episode — a lesson naming a concrete "
+            "account, IP, or version will not transfer and must be avoided. "
+        )
+
         if outcome:
             prompt = (
                 f"{outcome}\n\n"
@@ -1339,14 +1352,16 @@ class Agent:
                 "Draw the single most important CAUSAL lesson: name the specific action "
                 "that led to this outcome and what to do differently next time, in the form "
                 "'<action> led to <consequence>, so next time <change>'. "
+                f"{generalize}"
                 "Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
             )
         else:
             prompt = (
                 f"{perspective}\n\nAnalyze this battle history:\n\n{history_str}\n\n"
                 "What is the single most important lesson learned from this simulation that "
-                "you should remember for next time? Provide only the lesson as a short, "
-                "one-sentence bullet point. Do not include preamble."
+                "you should remember for next time? "
+                f"{generalize}"
+                "Provide only the lesson as a short, one-sentence bullet point. Do not include preamble."
             )
 
         try:

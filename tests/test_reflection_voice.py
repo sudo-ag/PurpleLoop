@@ -36,3 +36,25 @@ def test_perspective_present_without_outcome_too():
     red = _agent("red")
     red.summarize_experience([{"role": "red", "tool": "nmap", "output": "x"}])
     assert "RED attacker" in _prompt_sent(red)
+
+
+def test_reflection_prompt_demands_transferable_rule_with_outcome():
+    # A lesson carrying this box's accounts/IPs/versions does not transfer to a
+    # new environment and invites hallucination there. The prompt must require a
+    # role-based, transferable rule.
+    for role in ("red", "blue"):
+        agent = _agent(role)
+        agent.summarize_experience(
+            [{"role": role, "tool": "x", "output": "y"}],
+            outcome="OUTCOME: You (%s) WON this episode." % role,
+        )
+        p = _prompt_sent(agent)
+        assert "TRANSFERABLE RULE" in p, role
+        assert "never by a specific value" in p, role
+
+
+def test_reflection_prompt_demands_transferable_rule_without_outcome():
+    blue = _agent("blue")
+    blue.summarize_experience([{"role": "blue", "tool": "investigate_logs", "output": "clean"}])
+    p = _prompt_sent(blue)
+    assert "TRANSFERABLE RULE" in p
