@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -290,6 +291,21 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     actions.append(
         "ensured per-account authorized_keys baseline and restored any planted key"
     )
+
+    # Re-vulnerabilise: revert every path blue hardened this run via
+    # remediate_finding to its recorded original mode+owner, so the box returns to
+    # its attackable baseline. The arms race lives in blue's knowledge (re-applied
+    # each episode), never in persistent box state — else the dojo runs dry.
+    hardenings = getattr(blue_ex, "hardenings", None) or []
+    for h in list(hardenings):
+        p = shlex.quote(h["path"])
+        blue_ex.execute(
+            f"sudo chown {h['original_owner']} {p} && "
+            f"sudo chmod {h['original_mode']} {p} 2>/dev/null || true"
+        )
+    if hardenings:
+        actions.append(f"reverted {len(hardenings)} hardened path(s)")
+        blue_ex.hardenings.clear()
 
     return {"episode": episode, "actions": actions}
 
