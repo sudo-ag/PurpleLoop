@@ -93,6 +93,7 @@ class SimulationState:
     contained_ip: Optional[str] = None       # the attacker IP blue contained
     blue_remediate_turn: Optional[int] = None  # turn blue locked the compromised account
     remediated_user: Optional[str] = None      # the account blue remediated
+    vector_stops: List[Dict[str, Any]] = field(default_factory=list)  # privesc vectors blue closed via remediate_finding: {category,item,turn}
     red_tiers: Dict[int, int] = field(default_factory=dict)        # tier -> turn red first reached it
     blue_tier_detect: Dict[int, int] = field(default_factory=dict) # tier -> turn blue first detected it
     red_foothold_cred: Optional[Dict[str, str]] = None             # {user,pwd} red earned via use_credential
@@ -210,6 +211,23 @@ class Orchestrator:
                 and data.get("remediated") is True):
             return data.get("target_user")
         return None
+
+    def _record_vector_stop(self, output: str) -> None:
+        """A successful remediate_finding close is a prevention-class stop: record
+        the closed vector + turn, once per path. refused/error/unsupported closes
+        score nothing (no fabricated prevention)."""
+        try:
+            data = json.loads(output)
+        except Exception:
+            return
+        if (not isinstance(data, dict) or data.get("tool") != "remediate_finding"
+                or data.get("status") != "closed"):
+            return
+        item = data.get("target")
+        if any(v.get("item") == item for v in self.state.vector_stops):
+            return
+        self.state.vector_stops.append(
+            {"category": data.get("category"), "item": item, "turn": self.state.turn})
 
     def _remediation_held(self) -> bool:
         """True while blue's account lock is inside the post-foothold grace window:
@@ -680,6 +698,8 @@ class Orchestrator:
                                 "blue_remediation",
                                 {"turn": self.state.turn, "user": remediated_user},
                             )
+                    if role == "blue":
+                        self._record_vector_stop(output)
 
                     state_summary += f"\nTool Call: {tool_call['function']['name']} -> Output: {output}"
 
