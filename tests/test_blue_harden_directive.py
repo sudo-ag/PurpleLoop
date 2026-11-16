@@ -37,8 +37,7 @@ def _revoked_foothold_blue():
 def test_harden_directive_fires_after_revoke_in_observe():
     b = _revoked_foothold_blue()
     g = b.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "investigate_escalation_paths" in g
-    assert "remediate_finding" in g
+    assert "remediate_escalation_surface" in g
 
 
 def test_harden_directive_is_observe_only():
@@ -46,11 +45,11 @@ def test_harden_directive_is_observe_only():
     # is the observe/training behaviour, so it must NOT preempt RESPOND.
     b = _revoked_foothold_blue()
     g = b.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "remediate_finding" not in g
+    assert "remediate_escalation_surface" not in g
 
 
-def test_harden_directive_gone_once_scan_ran():
+def test_harden_directive_gone_once_surface_closed():
     b = _revoked_foothold_blue()
-    b.history.append(_turn("investigate_escalation_paths"))
+    b.history.append(_turn("remediate_escalation_surface"))
     g = b.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "remediate_finding" not in g
+    assert "remediate_escalation_surface" not in g

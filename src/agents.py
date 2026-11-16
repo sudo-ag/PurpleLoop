@@ -1766,6 +1766,9 @@ class BlueAgent(Agent):
     def _ran_escalation_scan(self) -> bool:
         return "investigate_escalation_paths" in self._tools_used()
 
+    def _closed_surface(self) -> bool:
+        return "remediate_escalation_surface" in self._tools_used()
+
     def _revoked_escalation(self) -> bool:
         return "revoke_escalation" in self._tools_used()
 
@@ -1822,14 +1825,14 @@ class BlueAgent(Agent):
         # paintball move: close the vector WITHOUT banning, forcing a pivot. In
         # non-observe blue ends the episode by containing, so this is observe-only.
         if (observe and confirmed_attackers and self._attacker_account()
-                and not self._ran_escalation_scan()):
+                and not self._closed_surface()):
             return (
                 "Blue guidance: You cut the account's group-based escalation. Now "
-                "close the REST of its escalation surface: call "
-                "`investigate_escalation_paths`, then `remediate_finding` on each "
-                "writable or SUID finding it reports to harden those vectors. This "
-                "closes the hole WITHOUT banning the attacker, forcing them to find "
-                "another way in — do it even while holding network containment."
+                "close the REST of its escalation surface in ONE move: call "
+                "`remediate_escalation_surface` — it scans and hardens every "
+                "writable/SUID vector at once, so whatever the attacker reaches for "
+                "is already shut, forcing them to a different class of attack. This "
+                "does NOT ban them — do it even while holding network containment."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only
