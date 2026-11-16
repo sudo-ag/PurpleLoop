@@ -794,6 +794,23 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'remediate_finding',
+                        'description': "Close the specific privilege-escalation hole a finding reports: make a world/group-writable path non-writable, or strip an unexpected SUID bit. Reversible, and it does NOT ban the attacker — the attacker stays connected and must find ANOTHER path. Call it on a finding from investigate_escalation_paths once you have identified the vector the attacker is using. Takes a `finding` object (the sensor's finding, with its category and item path).",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'finding': {
+                                    'type': 'object',
+                                    'description': 'One finding from investigate_escalation_paths, e.g. {"category": "writable", "item": "/opt/sinatra"}.',
+                                },
+                            },
+                            'required': ['finding'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'record_lead',
                         'description': "Note-taking (not a sensor): file one clue into your case file so you can connect it to others across turns. Call it after a sensor returns something relevant. Args: sensor (the investigation that produced it, e.g. 'investigate_connections'), observation (what you saw, one line), confidence ('low'|'medium'|'high'). Returns the lead's id for later citation.",
                         'parameters': {
@@ -1242,6 +1259,18 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remediate_finding':
+            # Live even in observe mode, like the other on-host responses: closing
+            # a vector is not a network block. Malformed args never crash.
+            finding = tool_call['function'].get('arguments', {}).get('finding')
+            if not isinstance(finding, dict):
+                return json.dumps({"tool": "remediate_finding", "status": "error",
+                                   "error": "missing or invalid finding"})
+            try:
+                return json.dumps(self.executor.remediate_finding(finding))
+            except Exception as e:
+                return json.dumps({"tool": "remediate_finding", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'record_lead':
             return self._dispatch_record_lead(tool_call['function'].get('arguments', {}))
