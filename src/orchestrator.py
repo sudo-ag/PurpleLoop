@@ -220,14 +220,19 @@ class Orchestrator:
             data = json.loads(output)
         except Exception:
             return
-        if (not isinstance(data, dict) or data.get("tool") != "remediate_finding"
-                or data.get("status") != "closed"):
+        if not isinstance(data, dict):
             return
-        item = data.get("target")
-        if any(v.get("item") == item for v in self.state.vector_stops):
-            return
-        self.state.vector_stops.append(
-            {"category": data.get("category"), "item": item, "turn": self.state.turn})
+
+        def record(category, item):
+            if item and not any(v.get("item") == item for v in self.state.vector_stops):
+                self.state.vector_stops.append(
+                    {"category": category, "item": item, "turn": self.state.turn})
+
+        if data.get("tool") == "remediate_finding" and data.get("status") == "closed":
+            record(data.get("category"), data.get("target"))
+        elif data.get("tool") == "remediate_escalation_surface":
+            for c in data.get("closed", []):
+                record(c.get("category"), c.get("item"))
 
     def _remediation_held(self) -> bool:
         """True while blue's account lock is inside the post-foothold grace window:
