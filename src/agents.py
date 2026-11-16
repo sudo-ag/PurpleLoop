@@ -812,6 +812,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'remediate_escalation_surface',
+                        'description': "Close the attacker's ENTIRE privilege-escalation surface in one move: scans the host and hardens every world/group-writable path and unexpected SUID binary it finds. Reversible, and it does NOT ban the attacker — so whatever vector they reach for is already shut, forcing them to find another class of attack. Prefer this over closing findings one at a time once an attacker has a foothold. Takes no arguments.",
+                        'parameters': {'type': 'object', 'properties': {}},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'remediate_finding',
                         'description': "Close the specific privilege-escalation hole a finding reports: make a world/group-writable path non-writable, or strip an unexpected SUID bit. Reversible, and it does NOT ban the attacker — the attacker stays connected and must find ANOTHER path. Call it on a finding from investigate_escalation_paths once you have identified the vector the attacker is using. Takes a `finding` object (the sensor's finding, with its category and item path).",
                         'parameters': {
@@ -1277,6 +1285,14 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remediate_escalation_surface':
+            # Live even in observe mode: closing the whole surface is an on-host
+            # response, not a network block.
+            try:
+                return json.dumps(self.executor.remediate_escalation_surface())
+            except Exception as e:
+                return json.dumps({"tool": "remediate_escalation_surface", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'remediate_finding':
             # Live even in observe mode, like the other on-host responses: closing
@@ -1750,6 +1766,9 @@ class BlueAgent(Agent):
     def _ran_escalation_scan(self) -> bool:
         return "investigate_escalation_paths" in self._tools_used()
 
+    def _closed_surface(self) -> bool:
+        return "remediate_escalation_surface" in self._tools_used()
+
     def _revoked_escalation(self) -> bool:
         return "revoke_escalation" in self._tools_used()
 
@@ -1806,14 +1825,14 @@ class BlueAgent(Agent):
         # paintball move: close the vector WITHOUT banning, forcing a pivot. In
         # non-observe blue ends the episode by containing, so this is observe-only.
         if (observe and confirmed_attackers and self._attacker_account()
-                and not self._ran_escalation_scan()):
+                and not self._closed_surface()):
             return (
                 "Blue guidance: You cut the account's group-based escalation. Now "
-                "close the REST of its escalation surface: call "
-                "`investigate_escalation_paths`, then `remediate_finding` on each "
-                "writable or SUID finding it reports to harden those vectors. This "
-                "closes the hole WITHOUT banning the attacker, forcing them to find "
-                "another way in — do it even while holding network containment."
+                "close the REST of its escalation surface in ONE move: call "
+                "`remediate_escalation_surface` — it scans and hardens every "
+                "writable/SUID vector at once, so whatever the attacker reaches for "
+                "is already shut, forcing them to a different class of attack. This "
+                "does NOT ban them — do it even while holding network containment."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only

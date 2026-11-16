@@ -1464,6 +1464,10 @@ class ToolExecutor:
             return True
         if p.startswith("/etc/sudoers") or p in ("/etc/passwd", "/etc/shadow"):
             return True
+        # World-writable BY DESIGN (sticky bit) — not privesc holes; hardening
+        # them would break the box's temp dirs mid-episode.
+        if p in ("/tmp", "/var/tmp", "/dev/shm"):
+            return True
         home = f"/home/{self.user}"
         return p == home or p.startswith(home + "/")
 
@@ -1517,6 +1521,33 @@ class ToolExecutor:
                                 "original_owner": owner, "original_group": group})
         return {**out, "status": "closed", "fix": fix,
                 "summary": f"Closed {cat} vector at {item} (reversible)."}
+
+    def remediate_escalation_surface(self) -> Dict[str, Any]:
+        """Close the WHOLE writable/SUID escalation surface in one sweep: scan the
+        host, then remediate_finding every writable and SUID finding. Closing all
+        of them means whatever vector the attacker reaches for is already shut,
+        forcing a pivot to another class. Reuses the per-finding closer (reversible,
+        fail-safe, refuses host/defender paths); reports what it closed vs skipped."""
+        scan = self.investigate_escalation_paths()
+        cats = scan.get("categories", {}) if isinstance(scan, dict) else {}
+        closed: List[Dict[str, str]] = []
+        skipped: List[Dict[str, str]] = []
+        for name in ("writable", "suid"):
+            for f in cats.get(name, {}).get("findings", []):
+                item = f.get("item")
+                if not item:
+                    continue
+                r = self.remediate_finding({"category": name, "item": item})
+                if r.get("status") == "closed":
+                    closed.append({"category": name, "item": item})
+                else:
+                    skipped.append({"category": name, "item": item, "status": r.get("status")})
+        return {
+            "tool": "remediate_escalation_surface",
+            "closed": closed,
+            "skipped": skipped,
+            "summary": f"Closed {len(closed)} escalation vector(s); {len(skipped)} skipped.",
+        }
 
     def revoke_escalation(self, user: str) -> Dict[str, Any]:
         """Preemptive least-privilege: strip a foothold account of the privileged

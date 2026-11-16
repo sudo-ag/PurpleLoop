@@ -87,3 +87,14 @@ def test_malformed_finding_is_error():
     r = ex.remediate_finding({"category": "writable"})  # no item
     assert r["status"] == "error"
     ex.execute.assert_not_called()
+
+
+def test_sticky_temp_dirs_are_refused():
+    # /tmp, /var/tmp, /dev/shm are world-writable BY DESIGN (sticky bit), not
+    # privesc holes — the sweep must never harden them (it would break the box).
+    ex = _executor()
+    ex.execute = MagicMock()
+    for d in ("/tmp", "/var/tmp", "/dev/shm"):
+        r = ex.remediate_finding({"category": "writable", "item": d})
+        assert r["status"] == "refused", d
+    ex.execute.assert_not_called()

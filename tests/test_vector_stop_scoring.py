@@ -45,3 +45,15 @@ def test_verdict_names_stopped_vectors():
     s.vector_stops = [{"category": "writable", "item": "/opt/sinatra", "turn": 3}]
     v = Referee(s).verdict()
     assert "writable" in v or "/opt/sinatra" in v
+
+
+def test_surface_records_each_closed_vector():
+    o = _orch()
+    o.state.turn = 7
+    out = json.dumps({"tool": "remediate_escalation_surface", "closed": [
+        {"category": "writable", "item": "/opt/sinatra"},
+        {"category": "suid", "item": "/usr/bin/odd"}]})
+    o._record_vector_stop(out)
+    items = {v["item"] for v in o.state.vector_stops}
+    assert items == {"/opt/sinatra", "/usr/bin/odd"}
+    assert all(v["turn"] == 7 for v in o.state.vector_stops)
