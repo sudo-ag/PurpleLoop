@@ -1464,6 +1464,10 @@ class ToolExecutor:
             return True
         if p.startswith("/etc/sudoers") or p in ("/etc/passwd", "/etc/shadow"):
             return True
+        # World-writable BY DESIGN (sticky bit) — not privesc holes; hardening
+        # them would break the box's temp dirs mid-episode.
+        if p in ("/tmp", "/var/tmp", "/dev/shm"):
+            return True
         home = f"/home/{self.user}"
         return p == home or p.startswith(home + "/")
 
