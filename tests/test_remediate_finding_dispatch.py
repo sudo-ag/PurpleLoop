@@ -28,3 +28,21 @@ def test_remediate_finding_is_in_blue_tools():
     blue = Agent(role="blue", executor=MagicMock())
     names = {t["function"]["name"] for t in blue.tools}
     assert "remediate_finding" in names
+
+
+def test_dispatch_surface_calls_executor():
+    ex = MagicMock()
+    ex.remediate_escalation_surface.return_value = {
+        "tool": "remediate_escalation_surface",
+        "closed": [{"category": "writable", "item": "/opt/sinatra"}]}
+    blue = Agent(role="blue", executor=ex)
+    out = blue.process_tool_call(
+        {"function": {"name": "remediate_escalation_surface", "arguments": {}}})
+    ex.remediate_escalation_surface.assert_called_once_with()
+    assert "remediate_escalation_surface" in out
+
+
+def test_surface_in_blue_tools():
+    blue = Agent(role="blue", executor=MagicMock())
+    names = {t["function"]["name"] for t in blue.tools}
+    assert "remediate_escalation_surface" in names

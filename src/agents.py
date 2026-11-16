@@ -812,6 +812,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'remediate_escalation_surface',
+                        'description': "Close the attacker's ENTIRE privilege-escalation surface in one move: scans the host and hardens every world/group-writable path and unexpected SUID binary it finds. Reversible, and it does NOT ban the attacker — so whatever vector they reach for is already shut, forcing them to find another class of attack. Prefer this over closing findings one at a time once an attacker has a foothold. Takes no arguments.",
+                        'parameters': {'type': 'object', 'properties': {}},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'remediate_finding',
                         'description': "Close the specific privilege-escalation hole a finding reports: make a world/group-writable path non-writable, or strip an unexpected SUID bit. Reversible, and it does NOT ban the attacker — the attacker stays connected and must find ANOTHER path. Call it on a finding from investigate_escalation_paths once you have identified the vector the attacker is using. Takes a `finding` object (the sensor's finding, with its category and item path).",
                         'parameters': {
@@ -1277,6 +1285,14 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remediate_escalation_surface':
+            # Live even in observe mode: closing the whole surface is an on-host
+            # response, not a network block.
+            try:
+                return json.dumps(self.executor.remediate_escalation_surface())
+            except Exception as e:
+                return json.dumps({"tool": "remediate_escalation_surface", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'remediate_finding':
             # Live even in observe mode, like the other on-host responses: closing
