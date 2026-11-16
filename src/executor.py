@@ -1692,9 +1692,18 @@ class ToolExecutor:
                     user = _find_user(line)
                     if user:
                         ioc_users.add(user)
+                elif _find_user(line) == self.user:
+                    # Blue's own control-account recon over sudo — not an
+                    # escalation signal. Drop the attacker-flavored indicator so
+                    # the flood of self recon can't read as the intruder
+                    # escalating (earned red is denied the control account).
+                    del evt["indicator"]
+                    evt["severity"] = "informational"
+                    evt["event"] = "Blue control session sudo (self)"
+                    evt["note"] = f"Own admin activity (sudo): {cmd}"
                 else:
-                    # Plain sudo (incl. blue's own stat/ls investigation and
-                    # vagrant's legitimate NOPASSWD use) — not a breach signal.
+                    # Plain sudo by another account — not a breach on its own,
+                    # but a real escalation indicator for that account.
                     evt["severity"] = "informational"
                     evt["event"] = "Sudo command executed"
                     evt["note"] = f"Sudo: {cmd}"

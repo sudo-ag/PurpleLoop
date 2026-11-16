@@ -301,6 +301,36 @@ def test_attacker_flag_read_is_a_breach():
     assert result["assessment"] == "BREACH"
 
 
+def test_blue_own_control_account_sudo_is_self_not_escalation():
+    # Blue's own recon runs as its control account (vagrant) over sudo. Those
+    # benign lines must be marked self and must NOT carry the attacker-flavored
+    # `sudo_escalation` indicator — otherwise naive blue reads the flood of its
+    # own recon as the intruder escalating and names itself the attacker.
+    executor = _executor()  # user="vagrant" == control account
+    own = (
+        "Nov  5 10:00:00 ubuntu sudo:  vagrant : TTY=unknown ; PWD=/ ; "
+        "USER=root ; COMMAND=/bin/cat /var/log/auth.log"
+    )
+    result = executor._parse_auth_log(own)
+    evt = result["events"][0]
+    assert evt.get("indicator") != "sudo_escalation"
+    assert "vagrant" not in result["suspicious_users"]
+    assert result["assessment"] == "CLEAN"
+
+
+def test_attacker_account_benign_sudo_still_escalation():
+    # The self-filter is gated on the control account: a NON-control account's
+    # sudo is a real escalation signal and must keep the `sudo_escalation`
+    # indicator, even when the command itself is benign.
+    executor = _executor()
+    atk = (
+        "Nov  5 10:00:00 ubuntu sudo:  lando_calrissian : TTY=pts/1 ; PWD=/ ; "
+        "USER=root ; COMMAND=/usr/bin/id"
+    )
+    result = executor._parse_auth_log(atk)
+    assert result["events"][0].get("indicator") == "sudo_escalation"
+
+
 # scripted_reset's six real passwd-touching sudo sub-commands (src/arena.py),
 # each carrying the `env PURPLELOOP_RESET_MARKER=1` prefix that exempts them.
 _RESET_SUB_COMMANDS = [
