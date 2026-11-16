@@ -18,10 +18,11 @@ def _red():
 
 def test_reset_restores_recorded_modes():
     blue = _blue_ex([{"path": "/opt/sinatra", "original_mode": "775",
-                      "original_owner": "lando_calrissian"}])
+                      "original_owner": "lando_calrissian", "original_group": "devs"}])
     scripted_reset(blue, _red(), episode=1)
     issued = " ".join(c.args[0] for c in blue.execute.call_args_list)
-    assert "chown lando_calrissian /opt/sinatra" in issued
+    # owner AND group must be restored, or a group-writable vector stays closed.
+    assert "chown lando_calrissian:devs /opt/sinatra" in issued
     assert "chmod 775 /opt/sinatra" in issued
     assert blue.hardenings == []
 

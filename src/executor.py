@@ -1488,24 +1488,24 @@ class ToolExecutor:
                     "summary": f"Refused: '{item}' is a host/defender path."}
 
         q = shlex.quote(item)
-        orig = self.execute(f"stat -c '%a %U' {q}").strip().split()
-        if len(orig) != 2 or not orig[0].isdigit():
+        orig = self.execute(f"stat -c '%a %U %G' {q}").strip().split()
+        if len(orig) != 3 or not orig[0].isdigit():
             return {**out, "status": "error", "error": "could not read path mode"}
-        mode, owner = orig[0], orig[1]
+        mode, owner, group = orig[0], orig[1], orig[2]
 
         if cat == "writable":
             # Already closed? root-owned with no group/other write bit.
             if owner == "root" and (int(mode, 8) & 0o022) == 0:
                 return {**out, "status": "closed", "fix": "already non-writable"}
-            self.execute(f"sudo chown root:root {q} && sudo chmod go-w {q} && echo PL_OK")
+            self.execute(f"sudo chown root:root {q} && sudo chmod go-w {q}")
             check = self.execute(f"stat -c '%a %U' {q}").strip().split()
-            ok = (len(check) == 2 and check[1] == "root"
+            ok = (len(check) >= 2 and check[1] == "root"
                   and check[0].isdigit() and (int(check[0], 8) & 0o022) == 0)
             fix = f"chown root:root + chmod go-w {item}"
         else:  # suid
             if (int(mode, 8) & 0o4000) == 0:
                 return {**out, "status": "closed", "fix": "already non-suid"}
-            self.execute(f"sudo chmod u-s {q} && echo PL_OK")
+            self.execute(f"sudo chmod u-s {q}")
             check = self.execute(f"stat -c '%a' {q}").strip().split()
             ok = (len(check) >= 1 and check[0].isdigit() and (int(check[0], 8) & 0o4000) == 0)
             fix = f"chmod u-s {item}"
@@ -1513,7 +1513,8 @@ class ToolExecutor:
         if not ok:
             return {**out, "status": "error", "fix": fix,
                     "error": "fix did not verify; hole may still be open"}
-        self.hardenings.append({"path": item, "original_mode": mode, "original_owner": owner})
+        self.hardenings.append({"path": item, "original_mode": mode,
+                                "original_owner": owner, "original_group": group})
         return {**out, "status": "closed", "fix": fix,
                 "summary": f"Closed {cat} vector at {item} (reversible)."}
 

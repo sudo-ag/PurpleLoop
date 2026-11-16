@@ -299,8 +299,11 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     hardenings = getattr(blue_ex, "hardenings", None) or []
     for h in list(hardenings):
         p = shlex.quote(h["path"])
+        # Restore owner AND group: a group-writable vector blue closed by taking
+        # it root-owned must come back with its original group, or red can no
+        # longer escalate through that group next episode.
         blue_ex.execute(
-            f"sudo chown {h['original_owner']} {p} && "
+            f"sudo chown {h['original_owner']}:{h['original_group']} {p} && "
             f"sudo chmod {h['original_mode']} {p} 2>/dev/null || true"
         )
     if hardenings:

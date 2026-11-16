@@ -15,19 +15,19 @@ def _executor():
 def test_writable_finding_is_chmod_go_w():
     ex = _executor()
     # stat(original) -> apply(chown+chmod) -> stat(verify)
-    ex.execute = MagicMock(side_effect=["775 lando_calrissian", "PL_OK", "755 root"])
+    ex.execute = MagicMock(side_effect=["775 lando_calrissian devs", "PL_OK", "755 root root"])
     r = ex.remediate_finding({"category": "writable", "item": "/opt/sinatra"})
     assert r["status"] == "closed"
     applied = ex.execute.call_args_list[1].args[0]
     assert "chmod go-w /opt/sinatra" in applied
     assert ex.hardenings == [
-        {"path": "/opt/sinatra", "original_mode": "775", "original_owner": "lando_calrissian"}
+        {"path": "/opt/sinatra", "original_mode": "775", "original_owner": "lando_calrissian", "original_group": "devs"}
     ]
 
 
 def test_suid_finding_strips_suid_bit():
     ex = _executor()
-    ex.execute = MagicMock(side_effect=["4755 root", "PL_OK", "755 root"])
+    ex.execute = MagicMock(side_effect=["4755 root root", "PL_OK", "755"])
     r = ex.remediate_finding({"category": "suid", "item": "/usr/bin/odd"})
     assert r["status"] == "closed"
     applied = ex.execute.call_args_list[1].args[0]
@@ -38,7 +38,7 @@ def test_owner_writable_requires_chown():
     # A path red's own account owns: chmod go-w alone leaves owner write, so the
     # writable fix must also chown root. Verify re-stat shows root ownership.
     ex = _executor()
-    ex.execute = MagicMock(side_effect=["775 lando_calrissian", "PL_OK", "755 root"])
+    ex.execute = MagicMock(side_effect=["775 lando_calrissian devs", "PL_OK", "755 root root"])
     r = ex.remediate_finding({"category": "writable", "item": "/opt/app"})
     assert r["status"] == "closed"
     applied = ex.execute.call_args_list[1].args[0]
@@ -65,7 +65,7 @@ def test_unsupported_category():
 def test_failed_chmod_is_error_not_closed():
     # Verify re-stat still shows a non-root owner / writable bits -> fix failed.
     ex = _executor()
-    ex.execute = MagicMock(side_effect=["775 lando_calrissian", "PL_OK", "775 lando_calrissian"])
+    ex.execute = MagicMock(side_effect=["775 lando_calrissian devs", "PL_OK", "775 lando_calrissian devs"])
     r = ex.remediate_finding({"category": "writable", "item": "/opt/app"})
     assert r["status"] == "error"
     assert ex.hardenings == []
@@ -75,7 +75,7 @@ def test_idempotent_reclose():
     # Already root-owned, no group/other write -> already closed, no action, no
     # hardenings entry (nothing to revert).
     ex = _executor()
-    ex.execute = MagicMock(side_effect=["755 root"])
+    ex.execute = MagicMock(side_effect=["755 root root"])
     r = ex.remediate_finding({"category": "writable", "item": "/opt/app"})
     assert r["status"] == "closed"
     assert ex.hardenings == []
