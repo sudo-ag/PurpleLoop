@@ -134,6 +134,15 @@ host. (vagrant/root are refused — you cannot lock the defender or the host.)
 Blocking your own control IP is refused automatically, so contain whatever
 suspicious_ips reports without hesitation.
 
+CLOSE THE VECTOR — HARDEN THE HOLE, DON'T JUST BAN:
+When `investigate_escalation_paths` reports a privilege-escalation finding (a
+world/group-writable path, an unexpected SUID binary) and the attacker is on the
+host, call `remediate_finding` with that finding to CLOSE it — make the writable
+path non-writable, strip the SUID bit. This is reversible and does NOT ban the
+attacker: it kills the specific route they would escalate through, forcing them
+to find another one. Prefer closing the vector the attacker is using over only
+watching it. You can close several findings as you identify them.
+
 CRITICAL — THE ATTACK IS LIVE AND ONGOING. The attacker may not have touched the
 flag yet when you first look. A quiet result means "nothing YET", not "safe". Do
 NOT conclude the system is clean and stop after one sweep. After you have checked
@@ -271,6 +280,15 @@ accounts are privileged and pivot to one of them:
 - A `sudo` member escalates with `sudo -S`; a `docker` member breaks out with
   `docker run -v /:/mnt --rm alpine cat /mnt/root/flag.txt` (no -it over SSH).
 Spend one turn on this triage before grinding privesc on an unprivileged account.
+
+ADAPT — THE DEFENDER CAN HARDEN YOUR PATH:
+The defender may CLOSE a vector you were using: a world-writable directory you
+relied on becomes read-only, a SUID binary loses its bit, a path that worked a
+moment ago now fails the SAME way (permission denied, no longer writable/setuid).
+When a path that previously worked suddenly fails like that, the defender hardened
+it — do NOT keep retrying the dead path. Abandon it and pivot to a DIFFERENT
+escalation vector (another writable location, a different SUID/capability, a
+group membership, a kernel exploit). Each closed door tells you to try another.
 
 PRIVILEGE ESCALATION — USE THE CREDENTIAL YOU EARNED:
 You are on the target over SSH, so you have NO interactive terminal. That is why
@@ -794,6 +812,23 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'remediate_finding',
+                        'description': "Close the specific privilege-escalation hole a finding reports: make a world/group-writable path non-writable, or strip an unexpected SUID bit. Reversible, and it does NOT ban the attacker — the attacker stays connected and must find ANOTHER path. Call it on a finding from investigate_escalation_paths once you have identified the vector the attacker is using. Takes a `finding` object (the sensor's finding, with its category and item path).",
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'finding': {
+                                    'type': 'object',
+                                    'description': 'One finding from investigate_escalation_paths, e.g. {"category": "writable", "item": "/opt/sinatra"}.',
+                                },
+                            },
+                            'required': ['finding'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'record_lead',
                         'description': "Note-taking (not a sensor): file one clue into your case file so you can connect it to others across turns. Call it after a sensor returns something relevant. Args: sensor (the investigation that produced it, e.g. 'investigate_connections'), observation (what you saw, one line), confidence ('low'|'medium'|'high'). Returns the lead's id for later citation.",
                         'parameters': {
@@ -1242,6 +1277,18 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remediate_finding':
+            # Live even in observe mode, like the other on-host responses: closing
+            # a vector is not a network block. Malformed args never crash.
+            finding = tool_call['function'].get('arguments', {}).get('finding')
+            if not isinstance(finding, dict):
+                return json.dumps({"tool": "remediate_finding", "status": "error",
+                                   "error": "missing or invalid finding"})
+            try:
+                return json.dumps(self.executor.remediate_finding(finding))
+            except Exception as e:
+                return json.dumps({"tool": "remediate_finding", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'record_lead':
             return self._dispatch_record_lead(tool_call['function'].get('arguments', {}))
@@ -1700,6 +1747,9 @@ class BlueAgent(Agent):
     def _ran_escalation_check(self) -> bool:
         return "investigate_docker" in self._tools_used()
 
+    def _ran_escalation_scan(self) -> bool:
+        return "investigate_escalation_paths" in self._tools_used()
+
     def _revoked_escalation(self) -> bool:
         return "revoke_escalation" in self._tools_used()
 
@@ -1748,6 +1798,22 @@ class BlueAgent(Agent):
                 f"— it strips docker/sudo and applies immediately, so red's next "
                 f"command cannot escalate. Do NOT `remediate_account` first (that lags "
                 f"behind a grace window) and do NOT investigate yet — REVOKE NOW."
+            )
+
+        # HARDEN — in observe (training) mode the network ban is held, so instead
+        # of only documenting, blue closes the BROADER privesc surface
+        # (writable/SUID) so red can't simply escalate another way. This is the
+        # paintball move: close the vector WITHOUT banning, forcing a pivot. In
+        # non-observe blue ends the episode by containing, so this is observe-only.
+        if (observe and confirmed_attackers and self._attacker_account()
+                and not self._ran_escalation_scan()):
+            return (
+                "Blue guidance: You cut the account's group-based escalation. Now "
+                "close the REST of its escalation surface: call "
+                "`investigate_escalation_paths`, then `remediate_finding` on each "
+                "writable or SUID finding it reports to harden those vectors. This "
+                "closes the hole WITHOUT banning the attacker, forcing them to find "
+                "another way in — do it even while holding network containment."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only

@@ -356,6 +356,11 @@ class ToolExecutor:
         self._remediated_users: List[str] = []
         # (user, [groups]) blue stripped this run, re-added at disconnect.
         self._revoked_privs: List[tuple] = []
+        # Paths blue hardened this run via remediate_finding, each with its
+        # pre-change mode+owner so scripted_reset can re-vulnerabilise the box
+        # next episode (the dojo must stay attackable; hardening lives in blue's
+        # knowledge, not in box state).
+        self.hardenings: List[Dict[str, str]] = []
         # Whether blue has armed the inbound-connection LOG rule (for network
         # visibility into an attacker's recon); removed at disconnect.
         self._conn_logging: bool = False
@@ -1443,6 +1448,75 @@ class ToolExecutor:
         else:
             findings["summary"] = f"Failed to remediate '{user}': {out.strip()[:160]}"
         return findings
+
+    # Directory roots and critical files remediate_finding must never chmod/chown
+    # (bricking the host, or hardening the defender itself). Specific FILES under
+    # these dirs (an unexpected SUID in /usr/bin, a writable /etc/init/*.conf) are
+    # still fair game — only the roots and auth-critical files are off limits.
+    _PROTECTED_PATH_ROOTS = {
+        "/", "/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/lib64",
+        "/root", "/var", "/sys", "/proc", "/dev",
+    }
+
+    def _is_protected_path(self, path: str) -> bool:
+        p = path.rstrip("/") or "/"
+        if p in self._PROTECTED_PATH_ROOTS:
+            return True
+        if p.startswith("/etc/sudoers") or p in ("/etc/passwd", "/etc/shadow"):
+            return True
+        home = f"/home/{self.user}"
+        return p == home or p.startswith(home + "/")
+
+    def remediate_finding(self, finding: Dict[str, Any]) -> Dict[str, Any]:
+        """Close ONE escalation-sensor finding's privesc hole (make a world/group-
+        writable path non-writable by taking it root-owned + go-w; strip an
+        unexpected SUID bit) WITHOUT banning the attacker — red stays connected and
+        must find another vector. Reversible: the path's pre-change mode+owner are
+        recorded on self.hardenings so scripted_reset re-vulnerabilises the box.
+        Fail-safe: a fix that cannot be verified returns status 'error', never a
+        false 'closed'. Refuses host/defender paths; unsupported categories no-op."""
+        cat = finding.get("category") if isinstance(finding, dict) else None
+        item = finding.get("item") if isinstance(finding, dict) else None
+        out = {"tool": "remediate_finding", "category": cat, "target": item,
+               "reversible": True, "fix": ""}
+        if not isinstance(item, str) or not item or cat not in ("writable", "suid"):
+            if cat in ("scheduled", "capability", "sudo"):
+                return {**out, "status": "unsupported"}
+            return {**out, "status": "error", "error": "malformed or unsupported finding"}
+        if self._is_protected_path(item):
+            return {**out, "status": "refused",
+                    "summary": f"Refused: '{item}' is a host/defender path."}
+
+        q = shlex.quote(item)
+        orig = self.execute(f"stat -c '%a %U %G' {q}").strip().split()
+        if len(orig) != 3 or not orig[0].isdigit():
+            return {**out, "status": "error", "error": "could not read path mode"}
+        mode, owner, group = orig[0], orig[1], orig[2]
+
+        if cat == "writable":
+            # Already closed? root-owned with no group/other write bit.
+            if owner == "root" and (int(mode, 8) & 0o022) == 0:
+                return {**out, "status": "closed", "fix": "already non-writable"}
+            self.execute(f"sudo chown root:root {q} && sudo chmod go-w {q}")
+            check = self.execute(f"stat -c '%a %U' {q}").strip().split()
+            ok = (len(check) >= 2 and check[1] == "root"
+                  and check[0].isdigit() and (int(check[0], 8) & 0o022) == 0)
+            fix = f"chown root:root + chmod go-w {item}"
+        else:  # suid
+            if (int(mode, 8) & 0o4000) == 0:
+                return {**out, "status": "closed", "fix": "already non-suid"}
+            self.execute(f"sudo chmod u-s {q}")
+            check = self.execute(f"stat -c '%a' {q}").strip().split()
+            ok = (len(check) >= 1 and check[0].isdigit() and (int(check[0], 8) & 0o4000) == 0)
+            fix = f"chmod u-s {item}"
+
+        if not ok:
+            return {**out, "status": "error", "fix": fix,
+                    "error": "fix did not verify; hole may still be open"}
+        self.hardenings.append({"path": item, "original_mode": mode,
+                                "original_owner": owner, "original_group": group})
+        return {**out, "status": "closed", "fix": fix,
+                "summary": f"Closed {cat} vector at {item} (reversible)."}
 
     def revoke_escalation(self, user: str) -> Dict[str, Any]:
         """Preemptive least-privilege: strip a foothold account of the privileged

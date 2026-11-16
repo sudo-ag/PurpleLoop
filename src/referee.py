@@ -63,8 +63,13 @@ class Referee:
         'red reached T2 (exfil); blue defended T1'."""
         board = self.tier_scoreboard()
         reached = [b for b in board if b["reached_turn"] is not None]
+        stops = getattr(self.state, "vector_stops", None) or []
+        stops_part = ""
+        if stops:
+            vectors = ", ".join(sorted({f"{v['category']}@{v['item']}" for v in stops}))
+            stops_part = f"; blue closed {len(stops)} vector(s): {vectors}"
         if not reached:
-            return "red reached no tier; blue had nothing to defend"
+            return "red reached no tier; blue had nothing to defend" + stops_part
         top = max(b["tier"] for b in reached)
         red_part = f"red reached T{top} ({TIER_NAMES[top]})"
         defended = [b for b in reached if b["defended"]]
@@ -72,7 +77,7 @@ class Referee:
             blue_part = "blue defended nothing"
         else:
             blue_part = "blue defended " + ", ".join(f"T{b['tier']}" for b in defended)
-        return f"{red_part}; {blue_part}"
+        return f"{red_part}; {blue_part}" + stops_part
 
     def resolve_outcome(self) -> Optional[str]:
         """Decide the graded winner from access/detection timing, or None while
