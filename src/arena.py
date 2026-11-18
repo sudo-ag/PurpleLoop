@@ -53,9 +53,22 @@ def graded_result(tiers: Optional[List[Dict[str, Any]]],
     return "blue" if top.get("defended") else "red"
 
 
+def persistence_winner(planted_turn: Optional[int],
+                       removed_turn: Optional[int]) -> Optional[str]:
+    """Winner of a persistence engagement: blue if it evicted the planted key
+    (removed on/after the plant), red if it planted and the key was never
+    removed, None if red never planted (no engagement on this vector)."""
+    if planted_turn is None:
+        return None
+    if removed_turn is not None and removed_turn >= planted_turn:
+        return "blue"
+    return "red"
+
+
 def build_scorecard(state: Any, winner: Optional[str], episode: int,
                     tiers: Optional[List[Dict[str, Any]]] = None,
-                    verdict: Optional[str] = None) -> Dict[str, Any]:
+                    verdict: Optional[str] = None,
+                    objective: str = "root") -> Dict[str, Any]:
     """Structured result for one episode, from the orchestrator's ground truth.
 
     `state` is anything exposing the SimulationState fields (duck-typed), so
@@ -92,7 +105,12 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int,
         "dwell": dwell,
         "tiers": tiers,
         "verdict": verdict,
-        "graded_result": graded_result(tiers, contain),
+        "graded_result": (
+            persistence_winner(g("red_persistence_planted_turn"),
+                               g("blue_persistence_removed_turn"))
+            if objective == "persistence"
+            else graded_result(tiers, contain)
+        ),
     }
 
 
@@ -322,6 +340,7 @@ def build_agents(
     host: str, model: str, user: str, pwd: str,
     jump_host: Optional[str], jump_user: str, jump_pwd: str,
     evade: bool, earned: bool, observe: bool,
+    objective: str = "root",
 ) -> "tuple[Agent, Agent]":
     """Build red/blue once; they are reused across episodes so their experience
     (via knowledge.json) compounds."""
@@ -360,7 +379,7 @@ def build_agents(
             red_ex = blue_ex
     kp = REPO / "knowledge.json"
     red = RedAgent(
-        executor=red_ex, model=model,
+        executor=red_ex, model=model, objective=objective,
         evade=evade, earned=earned, attacker_executor=attacker_ex, knowledge_path=kp,
     )
     blue = BlueAgent(executor=blue_ex, model=model, observe=observe, knowledge_path=kp)
@@ -387,6 +406,7 @@ def run_episodes(
     episodes_path: Path = EPISODES_PATH,
     reports_dir: Path = REPORTS_DIR,
     narrate: bool = False,
+    objective: str = "root",
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary."""
@@ -395,7 +415,7 @@ def run_episodes(
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
-    red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe)
+    red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe, objective)
     # --narrate: polish each debrief into prose via the driver model (reuses
     # blue's client). None (default) keeps the deterministic, reproducible report.
     polish = make_polish(blue.client, blue.model) if narrate else None
@@ -413,7 +433,8 @@ def run_episodes(
         )
         winner = orch.run_simulation(max_turns=max_turns)
         card = build_scorecard(orch.state, winner, i,
-                               tiers=orch.tier_scoreboard(), verdict=orch.verdict())
+                               tiers=orch.tier_scoreboard(), verdict=orch.verdict(),
+                               objective=objective)
         # Persist the full per-episode timeline so every scorecard is auditable —
         # a learning loop is only as trustworthy as our ability to see what
         # actually happened in each episode.
@@ -469,13 +490,15 @@ def main() -> None:
     p.add_argument("--remediate-grace", type=int, default=4, help="Turns blue's account lock is held after red's foothold, giving red a window to escalate (0 = instant lock). ~2 raw turns per red window-turn due to red/blue alternation, so 4 ≈ two escalation turns.")
     p.add_argument("--no-reset", action="store_true", help="Skip the scripted between-episode reset")
     p.add_argument("--narrate", action="store_true", help="Polish each agent's debrief into LLM prose (non-deterministic). Off = deterministic, reproducible report.")
+    p.add_argument("--objective", choices=["foothold", "exfil", "root", "persistence"], default="root",
+                   help="The engagement's win condition. 'persistence': red wins if its planted SSH key survives; blue wins only by removing it.")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
         user=a.user, pwd=a.pwd, jump_host=a.jump_host, jump_user=a.jump_user,
         jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned, observe=a.observe,
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
-        reset=not a.no_reset, narrate=a.narrate,
+        reset=not a.no_reset, narrate=a.narrate, objective=a.objective,
     )
 
 
