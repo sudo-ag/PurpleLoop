@@ -1764,6 +1764,37 @@ class BlueAgent(Agent):
                     return users[0]
         return None
 
+    def _has_foothold(self) -> bool:
+        """A landed foothold seen by ANY sensor, not just an auth-log login.
+        True for an auth account, a critical process under a non-control account
+        (service/web-RCE compromise like www-data, or root once red escalated),
+        or a confirmed webshell. This gates the surface-close, which is
+        account-agnostic; the account-revoke playbook stays on `_attacker_account`."""
+        if self._attacker_account():
+            return True
+        control = getattr(self.executor, "user", None)
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            tool = data.get("tool")
+            if tool == "investigate_processes":
+                for p in data.get("critical_processes") or []:
+                    user = p.get("user")
+                    if user and user != control:
+                        return True
+            elif tool == "investigate_webshells":
+                if (data.get("assessment") == "BREACH"
+                        or data.get("new_files")
+                        or data.get("flag_access_detected")):
+                    return True
+        return False
+
     def _ran_escalation_check(self) -> bool:
         return "investigate_docker" in self._tools_used()
 
@@ -1828,11 +1859,11 @@ class BlueAgent(Agent):
         # (writable/SUID) so red can't simply escalate another way. This is the
         # paintball move: close the vector WITHOUT banning, forcing a pivot. In
         # non-observe blue ends the episode by containing, so this is observe-only.
-        if (observe and confirmed_attackers and self._attacker_account()
+        if (observe and confirmed_attackers and self._has_foothold()
                 and not self._closed_surface()):
             return (
-                "Blue guidance: You cut the account's group-based escalation. Now "
-                "close the REST of its escalation surface in ONE move: call "
+                "Blue guidance: A foothold has landed. Close its escalation "
+                "surface in ONE move: call "
                 "`remediate_escalation_surface` — it scans and hardens every "
                 "writable/SUID vector at once, so whatever the attacker reaches for "
                 "is already shut, forcing them to a different class of attack. This "
