@@ -1464,9 +1464,11 @@ class RedAgent(Agent):
     """Red operator with its role fixed, and its own phase self-steering —
     computed from its OWN history, no orchestrator needed."""
 
-    def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest", **kw: Any):
+    def __init__(self, executor: ToolExecutor, model: str = "llama3.2:latest",
+                 objective: str = "root", **kw: Any):
         super().__init__(role="red", executor=executor, model=model, **kw)
         self.phase = "initial_enum"
+        self.objective = objective
         self.foothold_cred: "Optional[Dict[str, str]]" = None
 
     def reset_episode(self) -> None:
@@ -1475,8 +1477,12 @@ class RedAgent(Agent):
         self.foothold_cred = None
 
     def objective_met(self) -> bool:
-        """Red's campaign is done once it has read the flag (root). Case-insensitive,
-        matching the orchestrator's victory check."""
+        """Red's campaign is done once it meets its scenario objective. Default
+        (root): it read the flag. Persistence: it planted a surviving SSH-key
+        backdoor (same verified-readback signal the orchestrator credits)."""
+        if self.objective == "persistence":
+            return any(re.search(r"ssh-ed25519 [A-Za-z0-9+/]{20,}", str(t.output))
+                       for t in self.history)
         return any("flag{" in str(t.output).lower() for t in self.history)
 
     def _refresh_foothold(self) -> None:
@@ -1569,6 +1575,18 @@ class RedAgent(Agent):
 
     def phase_guidance(self) -> str:
         self._update_phase()
+        if self.objective == "persistence" and self.has_foothold and not self.objective_met():
+            # Persistence is the WIN this engagement, not the flag. Once red holds
+            # a foothold, planting a surviving key is the objective — a password
+            # lock won't evict a pubkey, so it beats blue's account response.
+            return (
+                "Red Phase: persistence. Next objective: your goal this engagement "
+                "is PERSISTENCE, not the flag. You have a foothold — plant your SSH "
+                "key now and keep it: generate a keypair on your Kali box, then "
+                "APPEND the public key to an account's ~/.ssh/authorized_keys and "
+                "read it back to confirm. A planted key survives a password lock. "
+                "That surviving key is the win."
+            )
         if self.phase == "flag_read":
             return f"Red Phase: {self.phase}. {self._flag_read_guidance()}"
         return f"Red Phase: {self.phase}. {RED_PHASE_GUIDANCE[self.phase]}"
