@@ -1662,8 +1662,9 @@ class BlueAgent(Agent):
 
     def confirmed_attackers(self) -> List[str]:
         """Attacker IPs blue has EVIDENCE OF MALICE for in its OWN tool output —
-        a port scan, brute-force spike, or confirmed flag access. Excludes blue's
-        own control IP. A bare foreign connection is not enough."""
+        a port scan, brute-force spike, confirmed flag access, or an earned
+        foothold (a successful non-control login). Excludes blue's own control
+        IP. A bare foreign connection is not enough."""
         own = getattr(self.executor, "control_source_ip", None)
         confirmed: List[str] = []
 
@@ -1689,6 +1690,9 @@ class BlueAgent(Agent):
                     add(data.get("suspicious_ips"))
                 if data.get("flag_access_detected"):
                     add(data.get("suspicious_ips"))
+                # An earned foothold (successful non-control login) is a
+                # confirmed attacker even with no scan/brute/flag signal.
+                add(data.get("foothold_ips"))
         return confirmed
 
     def _has_contained(self) -> bool:

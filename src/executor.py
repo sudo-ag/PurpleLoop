@@ -1749,6 +1749,7 @@ class ToolExecutor:
         flag_access = False
         ioc_ips: set = set()
         ioc_users: set = set()
+        foothold_ips: set = set()
 
         for line in raw.splitlines():
             if not line.strip():
@@ -1781,6 +1782,13 @@ class ToolExecutor:
                     evt["event"] = "Successful authentication"
                     for ip in ips:
                         ioc_ips.add(ip)
+                        # Earned foothold: a successful login from any source
+                        # other than blue's own control session. In this two-box
+                        # model that is the only legitimate login, so IP !=
+                        # control is a sufficient discriminator.
+                        # shortcut: no benign-login allowlist; upgrade to one
+                        # when deploying to a real multi-user host.
+                        foothold_ips.add(ip)
                     if user:
                         ioc_users.add(user)
                     evt["note"] = "Successful login"
@@ -1873,6 +1881,7 @@ class ToolExecutor:
             "suspicious_events": suspicious_count,
             "critical_events": critical_count,
             "suspicious_ips": sorted(ioc_ips),
+            "foothold_ips": sorted(foothold_ips),
             "suspicious_users": sorted(ioc_users),
             "summary": summary,
             "assessment": assessment,
