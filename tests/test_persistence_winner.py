@@ -33,6 +33,17 @@ def test_scorecard_uses_persistence_winner_when_objective_is_persistence():
     assert card["graded_result"] == "red"
 
 
+def test_scorecard_persistence_no_plant_does_not_count_flag_winner():
+    # No plant -> no persistence engagement. The legacy flag `winner` must NOT
+    # leak through as a win for a persistence episode.
+    class _S2:
+        red_persistence_planted_turn = None
+        blue_persistence_removed_turn = None
+    card = build_scorecard(_S2(), winner="blue", episode=1, objective="persistence")
+    assert card["graded_result"] is None
+    assert card["winner"] is None
+
+
 def test_scorecard_default_objective_unaffected():
     # No tier board + default objective -> graded_result stays None (legacy path).
     card = build_scorecard(_S(), winner=None, episode=1)

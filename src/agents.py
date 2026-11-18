@@ -1573,9 +1573,19 @@ class RedAgent(Agent):
             return
         self.phase = "initial_enum"
 
+    def _on_target(self) -> bool:
+        """Red can run commands on the target — by any path. has_foothold covers
+        the SSH-cred path; a `uid=` readback covers web-RCE/meterpreter root,
+        where use_credential never runs.
+        shortcut: a `uid=` from a Kali-side `id` would also match; harmless here
+        (the directive only nudges planting). Tighten in the extract phase."""
+        if self.has_foothold:
+            return True
+        return any("uid=" in str(t.output) for t in self._tool_turns())
+
     def phase_guidance(self) -> str:
         self._update_phase()
-        if self.objective == "persistence" and self.has_foothold and not self.objective_met():
+        if self.objective == "persistence" and self._on_target() and not self.objective_met():
             # Persistence is the WIN this engagement, not the flag. Once red holds
             # a foothold, planting a surviving key is the objective — a password
             # lock won't evict a pubkey, so it beats blue's account response.

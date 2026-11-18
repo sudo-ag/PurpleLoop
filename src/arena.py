@@ -83,6 +83,12 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int,
 
     dwell = detect - access if (access is not None and detect is not None) else None
 
+    if objective == "persistence":
+        # The persistence result is authoritative for this objective; override
+        # the legacy flag `winner` so a no-plant episode isn't counted as a flag win.
+        winner = persistence_winner(g("red_persistence_planted_turn"),
+                                    g("blue_persistence_removed_turn"))
+
     if contain is not None and (access is None or contain <= access):
         blue_outcome = "contained"       # prevented the breach
     elif access is not None and detect is not None and access <= detect:
@@ -106,9 +112,7 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int,
         "tiers": tiers,
         "verdict": verdict,
         "graded_result": (
-            persistence_winner(g("red_persistence_planted_turn"),
-                               g("blue_persistence_removed_turn"))
-            if objective == "persistence"
+            winner if objective == "persistence"
             else graded_result(tiers, contain)
         ),
     }

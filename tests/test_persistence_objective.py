@@ -28,6 +28,17 @@ def test_persistence_objective_not_met_without_plant():
     assert r.objective_met() is False
 
 
+def test_persistence_steers_on_target_access_without_ssh_cred():
+    # Red reached the box via web-RCE (no use_credential, so has_foothold is
+    # False) — a root uid readback. The persistence directive must still fire.
+    r = _red("persistence")
+    r.history = [Turn(0, "", {"function": {"name": "execute_command", "arguments": {}}},
+                      "uid=0(root) gid=0(root) groups=0(root)")]
+    assert r.has_foothold is False
+    g = r.phase_guidance()
+    assert "persistence" in g.lower() and "plant" in g.lower()
+
+
 def test_root_objective_still_uses_flag_check():
     r = _red("root")
     r.history = [_planted_turn()]  # planted but no flag read
