@@ -4,7 +4,7 @@ RESPOND), the way an analyst works a signal, instead of blind tool rotation.
 The phase is a pure function of blue's own history + the game facts the caller
 passes (observe mode, confirmed attackers, already-contained).
 """
-from src.agents import BlueAgent
+from src.agents import BlueAgent, BLUE_FOOTHOLD_HUNT
 from src.trajectory import Turn
 from src.mock_executor import MockExecutor
 
@@ -105,7 +105,10 @@ def test_respond_phase_orders_containment():
 
 
 def test_attribute_phase_documents_and_holds_in_observe():
+    # A confirmed scanner with no foothold now HUNTS first; ATTRIBUTE is reached
+    # once the foothold hunt is exhausted with nothing found.
     blue = _blue()
+    blue.history = [_turn(s) for s in BLUE_FOOTHOLD_HUNT]
     g = blue.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
     assert "192.168.64.11" in g
     assert "contain_attacker" not in g          # held in observe
