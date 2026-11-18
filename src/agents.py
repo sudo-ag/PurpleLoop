@@ -1621,6 +1621,14 @@ BLUE_CORROBORATION = [
     "investigate_processes",
     "investigate_docker",
 ]
+# Sensors whose evidence reveals a LANDED foothold (webshell process/file
+# baseline-diff; flag atime; live ps). Webshells first — it holds the web-RCE
+# foothold evidence blue's breadth rotation kept skipping.
+BLUE_FOOTHOLD_HUNT = [
+    "investigate_webshells",
+    "investigate_file_access",
+    "investigate_processes",
+]
 
 BLUE_TRIAGE_GUIDANCE = {
     "TRIAGE": (
@@ -1795,6 +1803,12 @@ class BlueAgent(Agent):
                     return True
         return False
 
+    def _foothold_hunt_exhausted(self) -> bool:
+        """True once every foothold-revealing sensor has run — the hunt is over,
+        so blue stops hunting and falls back to documenting."""
+        used = self._tools_used()
+        return all(t in used for t in BLUE_FOOTHOLD_HUNT)
+
     def _ran_escalation_check(self) -> bool:
         return "investigate_docker" in self._tools_used()
 
@@ -1896,6 +1910,27 @@ class BlueAgent(Agent):
                 f"Stop investigating and CONTAIN it now: call `contain_attacker` with "
                 f"ip=\"{ip}\". Containing the attacker before it reaches its objective "
                 f"wins the engagement. Do this before any other tool."
+            )
+
+        # HUNT — a scanner is confirmed but no foothold is pinned yet. Instead of
+        # settling into ATTRIBUTE document-mode, actively hunt the foothold with
+        # the sensors that hold its evidence (webshells reveal a web-RCE foothold
+        # blind breadth kept skipping). Once one surfaces the foothold,
+        # _has_foothold() flips True and HARDEN fires next turn. Observe-only, to
+        # match HARDEN; non-observe already goes RESPOND (contain).
+        if (phase == "ATTRIBUTE" and observe and not self._has_foothold()
+                and not self._foothold_hunt_exhausted()):
+            used = self._tools_used()
+            last_use = {t: i for i, t in enumerate(used)}
+            unrun = [t for t in BLUE_FOOTHOLD_HUNT if t not in used]
+            next_tool = min(unrun, key=lambda t: last_use.get(t, -1))
+            ip = confirmed_attackers[0]
+            return (
+                f"Blue guidance: The scanner {ip} is confirmed, but you have NOT "
+                f"pinned a landed foothold yet — a web-RCE or service-account "
+                f"foothold leaves no auth-log login. Hunt it before you conclude: "
+                f"call `{next_tool}`. Do not settle into documenting until you have "
+                f"checked for a foothold."
             )
 
         # ATTRIBUTE — confirmed but held (observe mode) or already contained:
