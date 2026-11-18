@@ -100,6 +100,7 @@ class SimulationState:
     escalation_auto_revoked: bool = False  # blue's reflex stripped the foothold account's escalation path
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
     red_persistence_planted_turn: Optional[int] = None  # turn red planted an SSH-key backdoor (no tier -- a detection/defense surface on top of whatever tier red already holds)
+    blue_persistence_removed_turn: Optional[int] = None  # turn blue evicted a planted key via remove_persistence (removed: True); the persistence-objective win hinges on this
     blue_case: Dict[str, Any] = field(default_factory=new_case)  # blue's per-episode case file (leads + hypotheses)
     red_lesson: Optional[str] = None   # red's per-episode reflect() takeaway (for the debrief)
     blue_lesson: Optional[str] = None  # blue's per-episode reflect() takeaway (for the debrief)
@@ -455,6 +456,17 @@ class Orchestrator:
             return False
         return bool(re.search(r"ssh-ed25519 [A-Za-z0-9+/]{20,}", output))
 
+    def _check_blue_persistence_removed(self, output: str) -> bool:
+        """Blue evicted a planted key: a remove_persistence result with
+        removed == True (a non-baseline key was actually stripped)."""
+        try:
+            data = json.loads(output)
+        except Exception:
+            return False
+        return (isinstance(data, dict)
+                and data.get("tool") == "remove_persistence"
+                and data.get("removed") is True)
+
     def _check_blue_foothold_detect(self, output: str) -> bool:
         """Blue saw red's foothold (T1): the auth log shows a successful login
         from a non-control source. The parser tags these 'Successful
@@ -653,6 +665,12 @@ class Orchestrator:
                         self.state.red_access_turn = self.state.turn
                         self.state.red_tiers.setdefault(TIER_ROOT, self.state.turn)
                         self._notify_dashboard("red_objective", {"turn": self.state.turn})
+                    # Blue evicted a planted key. `removed: True` only occurs when
+                    # a non-baseline key was actually stripped, so no account match
+                    # is needed. This is the persistence-objective win signal.
+                    if role == "blue" and self.state.blue_persistence_removed_turn is None \
+                            and self._check_blue_persistence_removed(output):
+                        self.state.blue_persistence_removed_turn = self.state.turn
                     if role == "blue" and TIER_FOOTHOLD not in self.state.blue_tier_detect \
                             and self._check_blue_foothold_detect(output):
                         self.state.blue_tier_detect[TIER_FOOTHOLD] = self.state.turn
