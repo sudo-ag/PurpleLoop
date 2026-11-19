@@ -29,3 +29,23 @@ def test_referee_resolve_outcome_blue_prevents():
     ref = Referee(state, detect_within_turns=3)
     assert ref.resolve_outcome() == "blue"
     assert state.blue_victory is True
+
+
+def test_persistence_does_not_end_on_root_access():
+    # Under persistence, red reaching root and blue detecting it must NOT end the
+    # episode — the plant->hunt->evict sub-game needs to play out first.
+    state = SimulationState()
+    state.red_access_turn = 3
+    state.blue_detect_turn = 3
+    ref = Referee(state, detect_within_turns=3, objective="persistence")
+    assert ref.resolve_outcome() is None
+    assert state.blue_victory is False
+
+
+def test_persistence_blue_eviction_ends_it_as_blue_win():
+    state = SimulationState()
+    state.red_access_turn = 3
+    state.blue_persistence_removed_turn = 6
+    ref = Referee(state, detect_within_turns=3, objective="persistence")
+    assert ref.resolve_outcome() == "blue"
+    assert state.blue_victory is True

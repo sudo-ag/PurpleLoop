@@ -1,4 +1,5 @@
 import base64
+import ipaddress
 import shlex
 import logging
 import subprocess
@@ -739,6 +740,26 @@ class ToolExecutor:
     def _uid0_accounts(self) -> set:
         return self._parse_uid0(self.execute("cat /etc/passwd"))
 
+    def _account_homes(self) -> Dict[str, str]:
+        """Map every account to its home directory from /etc/passwd (field 6).
+        Same passwd read as _uid0_accounts, so the same "passwd" keyword gating.
+        This is what lets persistence detect/evict find a key red planted in a
+        NON-/home account (e.g. www-data's /var/www via web RCE), instead of
+        assuming the /root + /home/* layout. Empty on an unreadable passwd."""
+        homes: Dict[str, str] = {}
+        for ln in self.execute("cat /etc/passwd").splitlines():
+            f = ln.split(":")
+            if len(f) >= 6 and f[0] and f[5].startswith("/"):
+                homes[f[0]] = f[5]
+        return homes
+
+    def _home_for(self, user: str) -> str:
+        """Home dir for an account, from /etc/passwd when readable, else the
+        conventional fallback (/root for root, /home/<user> otherwise) so a
+        passwd read failure degrades to the old guess rather than refusing."""
+        return self._account_homes().get(user) or (
+            "/root" if user == "root" else f"/home/{user}")
+
     def investigate_privileged_accounts(self) -> Dict[str, Any]:
         """Posture sensor for a rogue root-equivalent account (e.g. Dirty COW
         overwriting the root line of /etc/passwd with a uid-0 user — it replaces
@@ -876,21 +897,23 @@ class ToolExecutor:
 
     def _list_authorized_keys(self) -> Optional[set]:
         """Snapshot of every account's ~/.ssh/authorized_keys content, as
-        "<account>:<key-line>" strings, for /root and every /home/*
-        directory -- account-agnostic, since at mark_analysis_window() time
+        "<account>:<key-line>" strings, for EVERY account's home dir as listed
+        in /etc/passwd -- account-agnostic, since at mark_analysis_window() time
         blue doesn't yet know which account red will land on (earned-foothold
-        model). Enumerates home directories directly rather than reading
-        /etc/passwd, so this needs no dojo_exploit_ok gating and runs against
-        the real target. A trailing PL_OK sentinel distinguishes "ran, found
-        zero keys" (a common, valid baseline -- the defender logs in by
-        password, not key) from "command failed": only the sentinel's
-        presence/absence decides None vs. a (possibly empty) set."""
+        model), and red's web-RCE foothold lands in a non-/home account like
+        www-data (/var/www). Reads /etc/passwd field 6 for each account's home
+        (the "passwd" keyword is guard-blocked outside the dojo, which simply
+        yields no sentinel -> baseline_unavailable, handled gracefully). A
+        trailing PL_OK sentinel distinguishes "ran, found zero keys" (a common,
+        valid baseline -- the defender logs in by password, not key) from
+        "command failed": only the sentinel's presence/absence decides None vs.
+        a (possibly empty) set."""
         raw = self.execute(
-            "sudo bash -c 'for d in /root /home/*; do "
-            "u=$(basename \"$d\"); f=\"$d/.ssh/authorized_keys\"; "
+            "sudo bash -c 'while IFS=: read -r u _ _ _ _ h _; do "
+            "f=\"$h/.ssh/authorized_keys\"; "
             "[ -f \"$f\" ] && while IFS= read -r l; do "
             "[ -n \"$l\" ] && echo \"$u:$l\"; done < \"$f\"; "
-            "done; echo PL_OK' 2>/dev/null"
+            "done < /etc/passwd; echo PL_OK' 2>/dev/null"
         )
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         if "PL_OK" not in lines:
@@ -920,6 +943,82 @@ class ToolExecutor:
             out["flag_access_detected"] = True
             out["assessment"] = "BREACH"
         return out
+
+    def investigate_resident_foothold(self) -> Dict[str, Any]:
+        """Existence sensor for a LANDED foothold: an attacker's live session
+        (reverse shell, meterpreter, or an SSH foothold) shows as an ESTABLISHED
+        TCP connection to an off-box peer, visible BEFORE red runs any flagged
+        command -- unlike investigate_processes (a point-in-time ps snapshot) and
+        investigate_webshells (trips on flag-access, not the resident shell). Any
+        established peer that is not blue's own control session or a local address
+        is an active foothold.
+
+        shortcut: on the dojo the only legitimate off-box session is the
+        defender's control channel (excluded by control_source_ip), so any other
+        foreign peer is the attacker. On a real deployment, upgrade to an
+        allowlist of known-good peers (monitoring, backups) before trusting this.
+        """
+        raw = self.execute(
+            "sudo ss -tnp state established 2>/dev/null || "
+            "sudo netstat -tnp 2>/dev/null | grep ESTABLISHED || true"
+        )
+        return self._parse_resident_foothold(raw)
+
+    def _parse_resident_foothold(self, raw: str) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "tool": "investigate_resident_foothold",
+            "foreign_sessions": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
+        }
+        for line in (raw or "").splitlines():
+            if "Peer" in line or "Proto" in line:
+                continue  # header
+            # ss drops the State column under `state established` while netstat
+            # keeps it, so fixed indices don't line up. Pick out the host:port
+            # endpoint tokens instead (suffix after the last ':' is a port) — the
+            # first is Local, the second is Peer — which is layout-independent.
+            endpoints = [t for t in line.split()
+                         if ":" in t and (t.rsplit(":", 1)[-1].isdigit() or t.endswith(":*"))]
+            if len(endpoints) < 2:
+                continue
+            local, peer = endpoints[0], endpoints[1]
+            peer_ip = peer.rsplit(":", 1)[0].strip("[]")
+            if self._is_local_or_control(peer_ip):
+                continue
+            if not self._is_foothold_peer(peer_ip):
+                continue  # public-internet egress (CDN, updates) is not a foothold
+            proc = line.split("users:", 1)[1].strip() if "users:" in line else ""
+            out["foreign_sessions"].append({"peer": peer, "local": local, "process": proc})
+        if out["foreign_sessions"]:
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
+        return out
+
+    def _is_local_or_control(self, ip: str) -> bool:
+        """Peers that are never an attacker foothold: blue's own control session
+        and non-routable/loopback/link-local addresses."""
+        if not ip or ip in ("*", "0.0.0.0", "::"):
+            return True
+        if self.control_source_ip and ip == self.control_source_ip:
+            return True
+        return ip.startswith(("127.", "::1", "169.254.", "fe80", "::ffff:127."))
+
+    def _is_foothold_peer(self, ip: str) -> bool:
+        """A foothold peer sits on a private/LAN range: the attacker pivots from
+        the local network, and reverse shells here call back to a LAN C2. A
+        server's legitimate egress goes to PUBLIC internet (CDN, updates, APIs),
+        which must not be flagged -- else every normal outbound session alarms.
+
+        shortcut: a reverse shell to a PUBLIC internet C2 is missed; catching it
+        without false-flagging every CDN/update egress needs an egress allowlist
+        of known-good public peers -- add that before trusting this on a host
+        with heavy internet traffic.
+        """
+        try:
+            return ipaddress.ip_address(ip).is_private
+        except ValueError:
+            return False
 
     # Blue's own SSH exec session (and any sftp transfer) shows up in `ps` as a
     # transient sshd/sftp-server process; filtered by command string (not pid,
@@ -1643,8 +1742,7 @@ class ToolExecutor:
         if self._authorized_keys_baseline is None:
             findings["summary"] = f"no baseline available; refusing to modify {user}'s keys"
             return findings
-        home = "/root" if user == "root" else f"/home/{user}"
-        path = f"{home}/.ssh/authorized_keys"
+        path = f"{self._home_for(user)}/.ssh/authorized_keys"
         raw = self.execute(f"sudo cat {path} 2>/dev/null")
         live_lines = [ln for ln in raw.splitlines() if ln.strip()]
         kept = [ln for ln in live_lines if f"{user}:{ln}" in self._authorized_keys_baseline]

@@ -712,6 +712,14 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_resident_foothold',
+                        'description': 'Existence sensor for a LANDED foothold (MITRE T1059 reverse shell / T1021 session): lists ESTABLISHED TCP sessions to off-box peers, excluding your own control channel. Catches a resident attacker session (reverse shell, meterpreter, SSH foothold) BEFORE red runs any flagged command — unlike investigate_processes (a point-in-time ps snapshot) and investigate_webshells (trips on flag-access). Any foreign established peer is an active foothold. Returns foreign_sessions; BREACH / flag_access_detected means an attacker session is live. Run this early once you suspect an intrusion.',
+                        'parameters': {'type': 'object', 'properties': {}, 'required': []},
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_escalation_paths',
                         'description': 'General privilege-escalation POSTURE scan (read-only, not tied to one known vuln — use it to find a path on a box nobody pre-wired a sensor for). Enumerates SUID/SGID binaries, file capabilities, world-writable files/dirs, scheduled jobs (cron + systemd), and package-integrity deltas (dpkg -V), returning ONLY deviations from known-good: a binary owned by no package or whose hash changed, a GTFOBins-shellable SUID, a dangerous capability, a writable file, a root-scheduled job. Each finding carries its file path. CHAIN them — a writable file that a root-scheduled job executes is a privesc path: file the relevant pieces with record_lead and connect a writable item to the root-scheduled item that runs it with update_hypothesis. A category marked "unavailable" is a blind spot, NOT an all-clear.',
                         'parameters': {'type': 'object', 'properties': {}, 'required': []},
@@ -1227,6 +1235,12 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_persistence", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_resident_foothold':
+            try:
+                return json.dumps(self.executor.investigate_resident_foothold())
+            except Exception as e:
+                return json.dumps({"tool": "investigate_resident_foothold", "status": "error", "error": str(e)})
+
         elif tool_call['function']['name'] == 'investigate_escalation_paths':
             try:
                 return json.dumps(self.executor.investigate_escalation_paths())
@@ -1590,12 +1604,21 @@ class RedAgent(Agent):
             # a foothold, planting a surviving key is the objective — a password
             # lock won't evict a pubkey, so it beats blue's account response.
             return (
-                "Red Phase: persistence. Next objective: your goal this engagement "
-                "is PERSISTENCE, not the flag. You have a foothold — plant your SSH "
-                "key now and keep it: generate a keypair on your Kali box, then "
-                "APPEND the public key to an account's ~/.ssh/authorized_keys and "
-                "read it back to confirm. A planted key survives a password lock. "
-                "That surviving key is the win."
+                "Red Phase: persistence. Your goal this engagement is PERSISTENCE, "
+                "not the flag. You have a foothold. Plant a surviving SSH key — and "
+                "DO NOT stop after generating the key; the win is the key living in "
+                "the TARGET's authorized_keys, not a pubkey sitting on Kali:\n"
+                "1. On Kali (once): `ssh-keygen -t ed25519 -f /tmp/pl_key -N \"\"` "
+                "then `cat /tmp/pl_key.pub` to see the line.\n"
+                "2. ON THE TARGET, append that exact line to the authorized_keys of "
+                "an account you control — `/root/.ssh/authorized_keys` if you have "
+                "root, else your own account's `~/.ssh/authorized_keys`: "
+                "`mkdir -p ~/.ssh && echo 'ssh-ed25519 <your pl_key.pub line>' >> "
+                "~/.ssh/authorized_keys`.\n"
+                "3. ON THE TARGET, read it back: `cat ~/.ssh/authorized_keys` and "
+                "confirm the `ssh-ed25519` line is present. THAT target-side "
+                "readback is the win — `cat`-ing the pubkey on Kali is NOT. A "
+                "planted key survives a password lock."
             )
         if self.phase == "flag_read":
             return f"Red Phase: {self.phase}. {self._flag_read_guidance()}"
@@ -1653,6 +1676,7 @@ BLUE_CORROBORATION = [
 # baseline-diff; flag atime; live ps). Webshells first — it holds the web-RCE
 # foothold evidence blue's breadth rotation kept skipping.
 BLUE_FOOTHOLD_HUNT = [
+    "investigate_resident_foothold",
     "investigate_webshells",
     "investigate_file_access",
     "investigate_processes",
@@ -1829,6 +1853,9 @@ class BlueAgent(Agent):
                         or data.get("new_files")
                         or data.get("flag_access_detected")):
                     return True
+            elif tool == "investigate_resident_foothold":
+                if data.get("foreign_sessions") or data.get("flag_access_detected"):
+                    return True
         return False
 
     def _foothold_hunt_exhausted(self) -> bool:
@@ -1845,6 +1872,28 @@ class BlueAgent(Agent):
 
     def _closed_surface(self) -> bool:
         return "remediate_escalation_surface" in self._tools_used()
+
+    def _removed_persistence(self) -> bool:
+        return "remove_persistence" in self._tools_used()
+
+    def _planted_key_account(self) -> Optional[str]:
+        """The account a planted SSH key was found on, from the most recent
+        investigate_persistence BREACH (new_keys are "<account>:<key-line>"),
+        or None if no key has surfaced. This is the one breach that survives a
+        password lock and an IP ban, so detecting it drives the eviction."""
+        account = None
+        for t in self.history:
+            if not isinstance(t.output, str):
+                continue
+            try:
+                data = json.loads(t.output)
+            except Exception:
+                continue
+            if (isinstance(data, dict)
+                    and data.get("tool") == "investigate_persistence"):
+                for entry in data.get("new_keys") or []:
+                    account = entry.split(":", 1)[0]
+        return account
 
     def _revoked_escalation(self) -> bool:
         return "revoke_escalation" in self._tools_used()
@@ -1896,6 +1945,20 @@ class BlueAgent(Agent):
                 f"behind a grace window) and do NOT investigate yet — REVOKE NOW."
             )
 
+        # EVICT — a planted SSH key is the one breach that survives a password
+        # lock AND an IP ban, so stripping it is the only move that wins the
+        # persistence objective. The moment investigate_persistence surfaces a
+        # key, evict it — in BOTH modes (unlike HARDEN): containing the source
+        # doesn't remove a key already on disk.
+        key_account = self._planted_key_account()
+        if key_account and not self._removed_persistence():
+            return (
+                f"Blue guidance: investigate_persistence found a PLANTED SSH KEY on "
+                f"'{key_account}' — a backdoor that survives a password lock and an "
+                f"IP ban. Strip it NOW: call `remove_persistence` user=\"{key_account}\". "
+                f"This is the ONLY move that evicts the key; do it before anything else."
+            )
+
         # HARDEN — in observe (training) mode the network ban is held, so instead
         # of only documenting, blue closes the BROADER privesc surface
         # (writable/SUID) so red can't simply escalate another way. This is the
@@ -1910,6 +1973,23 @@ class BlueAgent(Agent):
                 "writable/SUID vector at once, so whatever the attacker reaches for "
                 "is already shut, forcing them to a different class of attack. This "
                 "does NOT ban them — do it even while holding network containment."
+            )
+
+        # HUNT persistence — once a foothold has landed, red's durable move is a
+        # planted SSH key (it outlives remediate_account). Blue never sees it
+        # unless it looks, so steer the one sensor that diffs authorized_keys.
+        # Keep sweeping every turn until a key surfaces (then EVICT, above, takes
+        # over): a one-shot hunt blinds blue if it checks before red plants --
+        # red plants on its own schedule, so an early clean sweep must not end
+        # the watch. Observe-gated to match HARDEN/foothold-hunt.
+        if (observe and self._has_foothold()
+                and not self._planted_key_account()):
+            return (
+                "Blue guidance: A foothold has landed. Before you settle into "
+                "documenting, check for a PLANTED BACKDOOR: call "
+                "`investigate_persistence` — it diffs every account's "
+                "authorized_keys and is the only sensor that catches an SSH-key "
+                "backdoor, which survives account remediation and an IP ban."
             )
 
         # RESPOND — act, branching on the identified technique (we are here only

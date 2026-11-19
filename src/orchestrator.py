@@ -130,7 +130,8 @@ class Orchestrator:
         self.state = SimulationState()
         # The referee scores from the state's recorded milestones; the loop
         # records, the referee judges.
-        self.referee = Referee(self.state, detect_within_turns)
+        self.referee = Referee(self.state, detect_within_turns,
+                               objective=getattr(red_agent, "objective", "root"))
 
 
     def _notify_dashboard(self, event_type: str, data: Dict[str, Any]):

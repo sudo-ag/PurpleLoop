@@ -16,9 +16,10 @@ TIER_NAMES = {TIER_FOOTHOLD: "foothold", TIER_EXFIL: "exfil", TIER_ROOT: "root"}
 
 
 class Referee:
-    def __init__(self, state: Any, detect_within_turns: int = 3):
+    def __init__(self, state: Any, detect_within_turns: int = 3, objective: str = "root"):
         self.state = state
         self.detect_within_turns = detect_within_turns
+        self.objective = objective
 
     def detection_dwell(self) -> Optional[int]:
         """Turns between red reaching the objective and blue detecting it. None if
@@ -82,6 +83,18 @@ class Referee:
     def resolve_outcome(self) -> Optional[str]:
         """Decide the graded winner from access/detection timing, or None while
         the detection window is still open. Sets state.blue_victory on a blue win."""
+        # Persistence: the engagement is decided by whether red's planted key
+        # SURVIVES, not by root/flag access. Reaching root must NOT end the
+        # episode (that short-circuits the plant->hunt->evict sub-game), so the
+        # tier-timing outcome below is suppressed. Blue evicting the key is the
+        # one early end (a fast blue win); otherwise the episode runs to
+        # max-turns and build_scorecard's persistence_winner grades it.
+        if self.objective == "persistence":
+            if self.state.blue_persistence_removed_turn is not None:
+                self.state.blue_victory = True
+                return "blue"
+            return None
+
         access = self.state.red_access_turn
         detect = self.state.blue_detect_turn
         contain = self.state.blue_contain_turn

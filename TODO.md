@@ -24,6 +24,41 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-18 — closed the live loop, then pivoted the game off the flag)
+
+Four arcs, all merged to `master` (8 commits ahead of `origin`, **unpushed**),
+568 tests green. Built SDD-style, each live-validated on `.11`/`.12` before merge.
+
+- **Earned-foothold confirmation — merged.** Blue confirms a quiet cracked-cred
+  login (`foothold_ips`); no false positive on real control-session logins.
+- **Any-sensor foothold — merged.** `_has_foothold()` fires HARDEN on a foothold
+  from any sensor (auth account, service-account critical process, webshell
+  BREACH), so a web-RCE `www-data` foothold triggers the surface close.
+- **Foothold hunt — merged.** Blue hunts the foothold (`investigate_webshells`
+  /`file_access`/`processes`) when a scanner is confirmed but no foothold is
+  pinned, instead of documenting. Live: blue found the breach. Exposed the next
+  gap — blue detects a foothold only once red ACTS on it (snapshot `ps` + webshell
+  trips on flag-access, not the resident shell) → "reliable/early foothold sensing"
+  arc (deferred).
+- **Persistence scenario (slice #1) — merged.** `--objective persistence`: the
+  win is whether red's planted SSH key SURVIVES, not a flag read. Blue wins only
+  by `remove_persistence` (a password lock won't evict a pubkey). **Live-proven:
+  red planted + verified a surviving key via meterpreter, blue didn't evict,
+  graded=red — the first engagement decided by an impact, red never touching root
+  or a flag.**
+
+**DIRECTION (set with the user this session):** pivot flag-hunt → agentic purple
+loop (red finds/chains vectors, blue detects/remediates, scored on the vector
+ledger; flag demoted to one signal). **Build-then-extract**: one non-flag
+*scenario* at a time (pick-one-impact-per-scenario: persistence / exfil /
+stealth-dwell), then extract a scenario abstraction after slice #2. No scenario
+spec/loader yet. Specs/plans: `docs/superpowers/{specs,plans}/2026-11-18-*`.
+
+**NEXT:** (1) blue-side persistence defense (steer blue to investigate→remove the
+key; makes the cat-and-mouse two-sided → blue wins), (2) slice #2 (exfil), then
+extract the scenario abstraction. Deferred minors: render the
+planted/detected/removed ledger line in the report; `_on_target()` uid= shortcut.
+
 ## Latest status (2026-11-16 — self-sudo fix, portable lessons, vector remediation)
 
 Diagnostic-driven continuation of the richer-blue arc (ran repeated earned+observe
@@ -158,6 +193,14 @@ project — the blue "anomaly profiler" about to be built in the engine
 extraction below is already a tiny homemade SIEM (capture normal, flag
 deviations); a real SIEM product is a much later upgrade once that engine
 proves itself, not a near-term detour.
+
+**Windows persistence (parallel slice, on radar — not started 2026-11-19):** run
+engagements against Windows targets. Framework (orchestrator/referee/grading/
+signal-driven steering) ports; the OS-specific content does not — it's a parallel
+slice, not a retarget. Gated behind an executor-transport spike: teach
+`ToolExecutor` a Windows transport (WinRM/PS-Remoting or SSH-on-Windows) first —
+nothing runs without it. Then one Windows persistence mechanism + its blue
+baseline-diff sensor. After the Linux slice lands.
 
 ---
 

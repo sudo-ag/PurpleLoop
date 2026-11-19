@@ -39,6 +39,18 @@ def test_persistence_steers_on_target_access_without_ssh_cred():
     assert "persistence" in g.lower() and "plant" in g.lower()
 
 
+def test_persistence_guidance_gives_the_target_side_append_recipe():
+    # The gemma-driven red stalled after keygen because the directive was vague.
+    # The guidance must spell out the TARGET-side append + readback, not just
+    # "plant a key" — the step red was skipping.
+    r = _red("persistence")
+    r.history = [Turn(0, "", {"function": {"name": "execute_command", "arguments": {}}},
+                      "uid=0(root) gid=0(root)")]
+    g = r.phase_guidance().lower()
+    assert "authorized_keys" in g and ">>" in g     # names the append
+    assert "read it back" in g or "cat ~/.ssh" in g  # and the target-side readback
+
+
 def test_root_objective_still_uses_flag_check():
     r = _red("root")
     r.history = [_planted_turn()]  # planted but no flag read

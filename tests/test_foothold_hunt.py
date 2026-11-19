@@ -20,15 +20,15 @@ def _used_turn(name):
     return Turn(0, "", {"function": {"name": name, "arguments": {}}}, out)
 
 
-def test_confirmed_scanner_no_foothold_hunts_webshells_first():
+def test_confirmed_scanner_no_foothold_hunts_resident_first():
     b = _blue()
     g = b.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
-    assert "investigate_webshells" in g
+    assert "investigate_resident_foothold" in g  # the earliest-catch sensor leads the hunt
 
 
 def test_hunt_picks_least_recently_used_unrun_sensor():
     b = _blue()
-    b.history = [_used_turn("investigate_webshells")]
+    b.history = [_used_turn("investigate_resident_foothold"), _used_turn("investigate_webshells")]
     g = b.tool_guidance(observe=True, confirmed_attackers=["192.168.64.11"], contained=False)
     assert "investigate_webshells" not in g
     assert any(s in g for s in ("investigate_file_access", "investigate_processes"))

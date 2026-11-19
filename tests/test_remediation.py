@@ -217,6 +217,43 @@ def test_remove_persistence_keeps_legit_drops_planted():
     assert "ssh-ed25519 BBBB planted" not in written
 
 
+def test_account_homes_parses_nonstandard_home_from_passwd():
+    # www-data's home is /var/www, not /home/www-data -- the real web-RCE
+    # foothold account. The map must come from /etc/passwd field 6.
+    ex = ToolExecutor(host="192.168.64.12", user="vagrant", pwd="vagrant")
+    ex.execute = lambda cmd, *a, **k: (  # type: ignore[method-assign]
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        if "/etc/passwd" in cmd else "")
+    homes = ex._account_homes()
+    assert homes["www-data"] == "/var/www"
+    assert homes["root"] == "/root"
+
+
+def test_remove_persistence_resolves_nonstandard_home():
+    # A key planted in www-data's /var/www/.ssh must be strippable -- eviction
+    # has to look where red actually landed (web RCE), not /home/www-data.
+    ex = ToolExecutor(host="192.168.64.12", user="vagrant", pwd="vagrant")
+    ex._authorized_keys_baseline = {"www-data:ssh-ed25519 AAAA legit"}
+    ex._calls = []
+
+    def fake_execute(cmd, *a, **k):
+        ex._calls.append(cmd)
+        if "/etc/passwd" in cmd:
+            return "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin\n"
+        if "cat /var/www/.ssh/authorized_keys" in cmd:
+            return "ssh-ed25519 AAAA legit\nssh-ed25519 BBBB planted"
+        return ""
+
+    ex.execute = fake_execute  # type: ignore[method-assign]
+    r = ex.remove_persistence("www-data")
+    assert r["removed"] is True and r["assessment"] == "REMOVED"
+    write_cmd = next(c for c in ex._calls if "base64 -d" in c)
+    assert "/var/www/.ssh/authorized_keys" in write_cmd
+    written = base64.b64decode(write_cmd.split("echo ", 1)[1].split(" |", 1)[0]).decode()
+    assert "ssh-ed25519 BBBB planted" not in written and "ssh-ed25519 AAAA legit" in written
+
+
 def test_remove_persistence_no_baseline_refuses():
     ex = ToolExecutor(host="192.168.64.12", user="vagrant", pwd="vagrant")
     ex._authorized_keys_baseline = None
