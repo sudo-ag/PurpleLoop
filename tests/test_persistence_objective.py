@@ -51,6 +51,20 @@ def test_persistence_guidance_gives_the_target_side_append_recipe():
     assert "read it back" in g or "cat ~/.ssh" in g  # and the target-side readback
 
 
+def test_persistence_recipe_resolves_real_home_not_bare_tilde():
+    # A meterpreter/web PHP shell does NOT expand `~`, so `mkdir -p ~/.ssh`
+    # creates a directory literally named `~` under the cwd (e.g.
+    # /var/www/html/drupal/~/.ssh) that sshd never reads -> fake persistence
+    # miscredited as a win. The recipe must resolve the account's REAL home
+    # (via getent passwd) and warn off a bare `~`.
+    r = _red("persistence")
+    r.history = [Turn(0, "", {"function": {"name": "execute_command", "arguments": {}}},
+                      "uid=33(www-data) gid=33(www-data)")]
+    g = r.phase_guidance()
+    assert "getent passwd" in g          # resolves the real home
+    assert "does not expand" in g.lower() or "literal" in g.lower()  # warns off bare ~
+
+
 def test_root_objective_still_uses_flag_check():
     r = _red("root")
     r.history = [_planted_turn()]  # planted but no flag read

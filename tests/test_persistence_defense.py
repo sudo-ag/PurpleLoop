@@ -83,6 +83,38 @@ def test_eviction_fires_in_non_observe_too():
     assert 'user="vagrantdev"' in g
 
 
+def test_hunt_fires_in_non_observe_too():
+    # A planted key outlives an IP ban, so blue must HUNT it in a live (non-observe)
+    # engagement too, not only in training -- mirror of eviction firing non-observe.
+    # Per the user's call, the hunt precedes containment: evicting the durable
+    # backdoor is the true win, an IP ban is not.
+    b = _blue()
+    b.history = [_foothold_turn()]
+    g = b.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "investigate_persistence" in g
+    assert "PLANTED BACKDOOR" in g
+
+
+def _account_foothold_turn(user="lando_calrissian"):
+    # A real login-account foothold (auth-log), unlike the www-data process one.
+    return _used_turn("investigate_logs",
+                      {"tool": "investigate_logs", "suspicious_users": [user]})
+
+
+def test_account_foothold_hunts_only_after_contain():
+    # A real login account's immediate danger is escalation, so blue runs that
+    # playbook first; once contained, it hunts the durable backdoor. Pins the
+    # "then hunt" half of the foothold-type scoping.
+    b = _blue()
+    # Escalation already revoked (IDENTIFY satisfied), so the only thing left is
+    # confirm/contain vs. hunt -- that is what the scoping decides.
+    b.history = [_account_foothold_turn(), _used_turn("revoke_escalation")]
+    before = b.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=False)
+    assert "PLANTED BACKDOOR" not in before  # account playbook (revoke/contain) runs first
+    after = b.tool_guidance(observe=False, confirmed_attackers=["192.168.64.11"], contained=True)
+    assert "investigate_persistence" in after and "PLANTED BACKDOOR" in after
+
+
 def test_no_re_eviction_once_removed():
     b = _blue()
     b.history = [_foothold_turn(), _persistence_breach("root"), _used_turn("remove_persistence")]

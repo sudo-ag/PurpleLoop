@@ -24,6 +24,62 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-23 cont'd — blue persistence un-gated; red plant recipe is the new blocker)
+
+Ran the harden run (5 eps, non-observe): **4 red / 0 blue / 1 draw**, blue never
+reached `remove_persistence`. Root cause: blue's persistence HUNT steering was
+gated behind `--observe`, so in a live run blue never ran `investigate_persistence`.
+**Un-gated it (foothold-type scoped):** service-context foothold (`www-data`) hunts
+immediately; login account hunts after contain — preserves the proven
+docker-escalation defense. **591 tests green** (+2). Observe validation (3 eps):
+blue now hunts every episode (detect **0.2 → 0.667**) but wins **0** — because
+**red's meterpreter plant doesn't actually write a key to disk** (shell nested in
+`sessions -i 1 -c` runs meterpreter cmds, not a shell; matches red's own "complex
+nested command → failed persistence" lesson). The loop's **blue half is fixed; the
+blocker is now red's plant recipe.**
+
+**NEXT:** (1) make red's plant actually land the key through meterpreter (standalone
+script or a real shell, keeping fix #1's real-home resolution); (2) re-test, then
+the non-observe harden proves the loop end-to-end; (3) deferred fix #2 still
+insurance. All uncommitted. Suggested commit:
+`feat(persistence): hunt planted SSH keys in live engagements, scoped by foothold type`.
+See HANDOFF.md "Session 2026-11-23 (cont'd)" for full detail.
+
+## Latest status (2026-11-23 — fixes #1 + #3 done (uncommitted); harden run #2 cut short)
+
+Implemented 2 of the 3 fixes from last session. **589 tests green.** Harden run
+#2 was **stopped mid-episode 5** before any tally flushed, so **slice #1 is still
+not confirmed hardened.** Fixes are **uncommitted** on top of `8a0d17f`.
+
+**DONE (uncommitted — `src/agents.py`, `src/arena.py`, `tests/test_persistence_objective.py`):**
+- **Fix #1 (red recipe)** — plant resolves the REAL home via
+  `getent passwd` and appends to an absolute `"$H/.ssh/authorized_keys"`, with a
+  warning that a bare `~` is not expanded by a meterpreter/web shell (dead key).
+  Kills the fake-plant at the source. +1 test.
+- **Fix #3 (episode cleanup)** — `scripted_reset` sweeps every passwd home and
+  deletes any authorized_keys with no clean baseline; `env PURPLELOOP_RESET_MARKER=1`
+  keeps blue's breach detector from flagging it. Found + fixed a bug mid-way: the
+  baseline sidecar had captured a planted key, so reset was *restoring the
+  backdoor* each episode.
+
+**DEFERRED — Fix #2 (orchestrator credit guard):** `_check_red_persistence_planted`
+is a pure text function; `test_tiers.py` + orchestrator tests depend on that. A
+live check breaks the contract. Fix #1 removes the root cause, so #2 is only
+insurance. Add it only if a clean harden run still shows red junk-pathing.
+
+**NEXT (when home):**
+1. Clean `.12` (likely dirty — run #2 killed mid-episode, no reset ran).
+2. Re-run the full 5-episode harden (~110 min). Confirm red plants into a real
+   home; blue BREACHes then evicts; blue wins most plant episodes.
+3. If red still junk-paths, do deferred fix #2.
+
+Suggested commit for the done work:
+`fix(persistence): plant into real passwd home, not bare ~; sweep all homes on reset`
+
+See HANDOFF.md "Session 2026-11-23" for the full detail.
+
+---
+
 ## Latest status (2026-11-18 — closed the live loop, then pivoted the game off the flag)
 
 Four arcs, all merged to `master` (8 commits ahead of `origin`, **unpushed**),

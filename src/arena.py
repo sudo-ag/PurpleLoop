@@ -302,16 +302,24 @@ def scripted_reset(blue_ex: Any, red_ex: Any, episode: int) -> Dict[str, Any]:
     # it would otherwise persist across episodes forever. Same capture-once
     # baseline + restore-if-drifted pattern as the /etc/passwd block above,
     # looped per-account over every existing authorized_keys file.
+    # Enumerate EVERY account's home from /etc/passwd (field 6), not just
+    # /root + /home/* -- red's web-RCE foothold plants into a service account
+    # like www-data (/var/www). A pre-existing clean authorized_keys carries a
+    # .purpleloop-baseline sidecar (captured once on the clean box); restore from
+    # it if drifted. A file with NO sidecar is one red created since clean-time
+    # (the defender logs in by password, so there is nothing legitimate to keep)
+    # -- delete it outright, else a planted key survives across episodes forever.
     blue_ex.execute(
-        "sudo bash -c 'for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do "
-        "[ -f \"$f\" ] || continue; "
-        "b=\"$f.purpleloop-baseline\"; "
-        "[ -f \"$b\" ] || cp \"$f\" \"$b\"; "
-        "diff -q \"$f\" \"$b\" >/dev/null 2>&1 || cp \"$b\" \"$f\"; "
-        "done' 2>/dev/null; true"
+        "sudo env PURPLELOOP_RESET_MARKER=1 bash -c "
+        "'while IFS=: read -r u x1 x2 x3 x4 h x5; do "
+        "f=\"$h/.ssh/authorized_keys\"; b=\"$f.purpleloop-baseline\"; "
+        "if [ -f \"$b\" ]; then "
+        "  diff -q \"$f\" \"$b\" >/dev/null 2>&1 || cp \"$b\" \"$f\"; "
+        "elif [ -f \"$f\" ]; then rm -f \"$f\"; fi; "
+        "done < /etc/passwd' 2>/dev/null; true"
     )
     actions.append(
-        "ensured per-account authorized_keys baseline and restored any planted key"
+        "restored or removed any planted authorized_keys across all passwd homes"
     )
 
     # Re-vulnerabilise: revert every path blue hardened this run via
