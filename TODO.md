@@ -24,7 +24,30 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
-## Latest status (2026-11-23 cont'd — blue persistence un-gated; red plant recipe is the new blocker)
+## Latest status (2026-11-24 — red plant FIXED on glm-5.3-flash; harden run pending healthy cloud)
+
+Red's meterpreter plant blocker is **fixed and committed** (`d18908b`, pushed).
+Root cause: `sessions -i <id> -c "<cmd>"` runs on the meterpreter console, not a
+shell. New doctrine drives the plant as 3 calls (write script on Kali → `upload`
+→ `execute -f /bin/sh -a <path>`). **gemma4:31b-cloud couldn't carry the
+multi-call sequence (0/4 — compliance ceiling); switched red model to
+`glm-5.3-flash:cloud`**, which does it reliably: 3-ep observe run = plant landed
+3/3, blue evicted via `remove_persistence` → **blue 2 / red 0 / draw 1**. Added
+a Dirty COW guard rail (glm was kernel-panicking the box with unbounded exploit
+loops). 591 tests green.
+
+**Next:** re-run the 5-ep non-observe harden run on glm once Ollama cloud is
+healthy (it was throwing 502s — aborted the attempt, no data written):
+```
+TARGET_HOST=192.168.64.12 RED_JUMP_HOST=192.168.64.11 \
+uv run python -m src.arena --episodes 5 --host 192.168.64.12 \
+  --jump-host 192.168.64.11 --earned --objective persistence \
+  --model glm-5.3-flash:cloud --max-turns 24
+```
+Fall back to a local red model if cloud 502s persist. `.12` crashes need a
+manual VM reboot before a rerun.
+
+## Prior status (2026-11-23 cont'd — blue persistence un-gated; red plant recipe is the new blocker)
 
 Ran the harden run (5 eps, non-observe): **4 red / 0 blue / 1 draw**, blue never
 reached `remove_persistence`. Root cause: blue's persistence HUNT steering was
