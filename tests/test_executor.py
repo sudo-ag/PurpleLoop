@@ -746,3 +746,37 @@ def test_run_winrm_error_string_passthrough():
 
     ex._winrm_jump = FakeJump()
     assert "WINRM_ERR" in ex._run_winrm("ps aux")
+
+
+def test_run_winrm_shell_quotes_credentials():
+    import shlex
+    ex = ToolExecutor(host="10.0.0.9", user="vagrant", pwd="p a$(id)",
+                      jump_host="10.0.0.1", jump_user="kali", jump_pwd="kali",
+                      transport="winrm")
+    ex._winrm_ready = True
+    sent = {}
+
+    class FakeJump:
+        def execute(self, c):
+            sent["c"] = c
+            return "ok"
+
+    ex._winrm_jump = FakeJump()
+    ex._run_winrm("whoami")
+    # the dangerous pwd must be shell-quoted, never interpolated raw (would
+    # argv-split / inject on the jump)
+    assert "p a$(id)" not in sent["c"].replace(shlex.quote("p a$(id)"), "")
+    assert shlex.quote("p a$(id)") in sent["c"]
+
+
+def test_winrm_earned_without_foothold_does_not_auth():
+    ex = ToolExecutor(host="10.0.0.9", user="", pwd="",
+                      jump_host="10.0.0.1", jump_user="kali", jump_pwd="kali",
+                      require_foothold=True, transport="winrm")
+
+    def boom(c):
+        raise AssertionError("winrm must not run before a foothold is earned")
+
+    ex._run_winrm = boom
+    out = ex.execute_remote("whoami")
+    assert "foothold" in out.lower()
