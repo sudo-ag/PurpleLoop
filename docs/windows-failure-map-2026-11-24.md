@@ -61,3 +61,9 @@ After the agent self-checker project: re-ran the same `.17` WinRM episode.
 reported CLEAN/empty (silent blind). After: blue honestly reports it cannot
 assess Windows yet. The false-clean is fixed; next up is porting real Windows
 sensors so blue goes from honest-blind to actually seeing.
+
+**Scope note:** the self-checker guards *investigation* sensors only. Blue's
+action tools (`contain_attacker`, `remediate_account`, `remove_persistence`,
+`revoke_escalation`, …) are still Linux shell ops — they'd error/no-op on Windows.
+Blue can honestly *assess* "this is Windows, I can't see it," but is not yet safe
+to *act* on Windows. Windows response is a later project.

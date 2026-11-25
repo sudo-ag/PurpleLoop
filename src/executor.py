@@ -674,7 +674,17 @@ class ToolExecutor:
         reports a Unix kernel, else 'windows' (uname absent / WinRM error)."""
         if self._detected_os is None:
             raw = self.execute("uname -s 2>/dev/null || true")
-            self._detected_os = "linux" if ("Linux" in raw or "Darwin" in raw) else "windows"
+            if "Linux" in raw or "Darwin" in raw:
+                self._detected_os = "linux"
+            elif raw.strip() and not raw.startswith("Error:"):
+                # real output with no Unix kernel (e.g. WinRM "not recognized").
+                self._detected_os = "windows"
+            else:
+                # Inconclusive probe (our-layer SSH error / empty): don't cache a
+                # guess as if discovered — collapsing failure to "windows" would
+                # silence every sensor on a reachable Linux box. Fall back to the
+                # transport hint and re-probe next call.
+                return "windows" if self.transport == "winrm" else "linux"
         return self._detected_os
 
     def investigate_environment(self) -> Dict[str, Any]:

@@ -823,3 +823,19 @@ def test_detected_os_resets_with_analysis_window():
     _ = ex.detected_os
     ex.mark_analysis_window()
     assert ex._detected_os is None
+
+
+def test_detect_os_inconclusive_on_ssh_box_falls_back_to_linux_not_windows():
+    # A transient SSH error must NOT silence sensors as "windows" on a Linux box.
+    ex = ToolExecutor(host="h", user="u", pwd="p")  # transport ssh
+    ex.execute = lambda c: "Error: SSH connection to h failed: timeout"
+    assert ex.detected_os == "linux"   # transport fallback, not the lossy "windows"
+    assert ex._detected_os is None     # inconclusive is NOT cached -> re-probe next call
+
+
+def test_detect_os_inconclusive_on_winrm_falls_back_to_windows():
+    ex = ToolExecutor(host="h", user="u", pwd="p", jump_host="j",
+                      jump_user="k", jump_pwd="k", transport="winrm")
+    ex.execute = lambda c: "Error: Remote command timed out"
+    assert ex.detected_os == "windows"
+    assert ex._detected_os is None
