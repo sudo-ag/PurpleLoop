@@ -15,3 +15,5 @@ class TargetProfile:
     flag_path: str = "/root/flag.txt"
     objective: str = "root"          # "foothold" | "exfil" | "root"
     env_notes: str = ""              # technique hints for training; empty for real targets
+    os: str = "linux"                # "linux" | "windows"
+    transport: str = "ssh"           # "ssh" | "winrm" (winrm is jump-routed)
