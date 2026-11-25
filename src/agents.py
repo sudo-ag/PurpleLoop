@@ -10,6 +10,19 @@ import re
 
 
 # System Prompts
+# Blue sensors that shell Linux commands. On a non-Linux target they are relabeled
+# not_applicable at dispatch rather than run (which would report a false CLEAN).
+# investigate_environment is excluded — it IS the cross-OS probe.
+LINUX_ONLY_SENSORS = frozenset({
+    "investigate_processes", "investigate_network", "investigate_logs",
+    "investigate_file_access", "investigate_connections",
+    "investigate_resident_foothold", "investigate_webshells",
+    "investigate_persistence", "investigate_privileged_accounts",
+    "investigate_escalation_paths", "investigate_ftp_sessions",
+    "investigate_box_anomalies", "investigate_web_requests", "investigate_docker",
+})
+
+
 RED_SYSTEM_PROMPT = """You are a Red Team operator. Your goal is to perform reconnaissance,
 exploit vulnerabilities, and capture the flag (CTF).
 
@@ -629,6 +642,18 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_environment',
+                        'description': 'Detect the target OS/shell BEFORE other investigations. Run this first: the other sensors are Linux-specific and report not_applicable on a non-Linux target, so knowing the OS tells you which findings are meaningful.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_processes',
                         'description': 'Examine running processes on the target system for suspicious activity. Returns structured data with process details, suspicion flags, and a summary.',
                         'parameters': {
@@ -1161,6 +1186,23 @@ class Agent:
         Processes a single tool call by executing the command via ToolExecutor.
         Handles both red's execute_command and blue's investigation tools.
         """
+        name = tool_call['function']['name']
+
+        # Self-check guard: a Linux-only sensor on a non-Linux target is relabeled
+        # not_applicable instead of run — otherwise it reports a false CLEAN.
+        if name in LINUX_ONLY_SENSORS and self.role == "blue":
+            # Relabel only on a confirmed non-Linux OS. detected_os only ever
+            # returns "linux"/"windows"; anything else (unset, a test mock) falls
+            # through and dispatches normally.
+            if getattr(self.executor, "detected_os", "linux") == "windows":
+                return json.dumps({
+                    "tool": name, "status": "not_applicable", "detected_os": "windows",
+                    "summary": f"{name} is a Linux sensor; no Windows implementation yet.",
+                })
+
+        if name == 'investigate_environment':
+            return json.dumps(self.executor.investigate_environment())
+
         if tool_call['function']['name'] == 'execute_command':
             command = tool_call['function']['arguments'].get('command')
             if command:
@@ -1974,6 +2016,9 @@ class BlueAgent(Agent):
         return "MONITOR"
 
     def tool_guidance(self, observe: bool, confirmed_attackers: List[str], contained: bool) -> str:
+        # investigate_environment is steered as the first move by its placement
+        # (first in blue's tool list) and its "run this first" description, not by
+        # an override here — an override preempted the proven calm-phase guidance.
         phase = self.triage_phase(observe, confirmed_attackers, contained)
 
         # IDENTIFY — a foothold landed: determine HOW the account can escalate

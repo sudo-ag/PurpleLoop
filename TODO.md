@@ -24,6 +24,45 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-24 cont'd #3 — Windows capability: WinRM transport SHIPPED, self-checker built)
+
+Pivoted from the model matrix to **generalizing the agents off the Linux dojo**
+("drop them anywhere"). Two arcs, both SDD-style (brainstorm → spec → plan →
+build → fresh-review).
+
+**ARC 1 — WinRM transport: DONE, merged to `master`, pushed (`6349237`).**
+The agents can now reach a **Windows** box. Executor speaks `ssh|winrm`
+(`--transport`), selected via `TargetProfile`. WinRM is **jump-routed through the
+Kali box `.11`** — macOS Local Network entitlement blocks venv-Python from LAN
+sockets, so pywinrm runs on `.11` (native ARM) and the executor drives it over the
+existing SSH channel. Live-validated on `.17` (`whoami` works). Spec/plan in
+`docs/superpowers/{specs,plans}/2026-11-24-windows-winrm-transport*`.
+
+**ARC 2 — Agent environment self-checker: DONE, Opus-reviewed, merged to `master`.**
+Kills the false-CLEAN the WinRM
+episode exposed. `ToolExecutor.detected_os` (lazy `uname -s` probe, per-episode),
+an `investigate_environment` tool, and a one-line dispatch guard in `agents.py`:
+a Linux-only sensor on a `detected_os=="windows"` target returns `not_applicable`
+instead of running and reporting CLEAN. **609 tests green. Live on `.17`: env
+detected windows, 10 sensors not_applicable, 0 CLEAN** (was 7 silent-CLEAN).
+Spec/plan: `docs/superpowers/{specs,plans}/2026-11-24-agent-self-checker*`.
+
+Review fixed 1 Important (an inconclusive OS probe collapsed to a cached
+"windows", which would silence all sensors on a reachable Linux box — now falls
+back to the transport hint, uncached). 611 tests green.
+
+**RESUME HERE:**
+1. **Next project — port real Windows sensors** so blue goes from honest-blind to
+   actually seeing: `investigate_processes`→`Get-Process`, logins→Security Event
+   Log 4624/4625, persistence→Run keys/scheduled tasks/services, network→
+   `Get-NetTCPConnection`. Priority order is in `docs/windows-failure-map-2026-11-24.md`.
+2. Deferred: earned Windows foothold (`set_target_credential` is Linux-only);
+   fill the model matrix; multi-box topology (needs an x86 host).
+
+**Provisioning note:** pywinrm on `.11` is ad-hoc (`pip3 --user`); a fresh jump box
+needs one `pip install pywinrm` before WinRM episodes. `scripted_reset` is
+Linux/SSH — use `--no-reset` for WinRM targets.
+
 ## Latest status (2026-11-24 cont'd #2 — LOOP PROVEN end-to-end non-observe via per-side model split)
 
 **The session-long goal is met.** The persistence loop now runs clean end-to-end
