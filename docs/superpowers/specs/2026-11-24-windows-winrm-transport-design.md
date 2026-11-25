@@ -3,6 +3,16 @@
 Date: 2026-11-24
 Status: APPROVED (2026-11-24) — B-lite plumbing (wire TargetProfile with os+transport) + pywinrm dependency
 
+> **UPDATE (2026-11-24, during execution):** Task 1's live gate found the
+> transport must be **jump-routed**, not direct. macOS Local Network entitlement
+> blocks venv Python from *all* LAN hosts (confirmed: `.11:22`/`.12:22`/`.17:5985`
+> all `Errno 65`, while system `ssh`/`curl` work — the exact reason `executor.py`
+> shells out to the system `ssh` binary). So the WinRM call runs **on the Kali
+> jump `.11`** (native ARM, reaches `.17:5985`) via the existing entitled
+> ssh-to-jump channel. `pywinrm` lives on `.11` (pip, provisioned), NOT in the Mac
+> venv. Transport confirmed: `ntlm`, `.11`→`.17` whoami = `desktop-mp2vnf8\vagrant`.
+> `_run_winrm` ships a tiny runner to `.11` and invokes it over SSH.
+
 ## Intent / why
 
 PurpleLoop's agents are the portable product; the box is the dojo. Today the
