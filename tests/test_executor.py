@@ -1,4 +1,5 @@
 import datetime
+import json
 import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
@@ -839,3 +840,36 @@ def test_detect_os_inconclusive_on_winrm_falls_back_to_windows():
     ex.execute = lambda c: "Error: Remote command timed out"
     assert ex.detected_os == "windows"
     assert ex._detected_os is None
+
+
+# --- Windows process sensor: parse + cross-OS suspicion scoring ----------------
+
+def test_parse_ps_windows_flags_sensitive_file_access():
+    ex = _executor()
+    raw = json.dumps([
+        {"pid": 4, "ppid": 0, "name": "System", "cmd": None, "user": "SYSTEM"},
+        {"pid": 900, "ppid": 500, "name": "svchost.exe",
+         "cmd": r"C:\Windows\System32\svchost.exe -k netsvcs", "user": "SYSTEM"},
+        {"pid": 1337, "ppid": 900, "name": "cmd.exe",
+         "cmd": r"cmd.exe /c type C:\Users\Administrator\Desktop\flag.txt",
+         "user": "Administrator"},
+    ])
+    result = ex._parse_ps_windows(raw)
+    assert result["tool"] == "investigate_processes_windows"
+    assert result["total_processes"] == 3
+    assert result["assessment"] == "BREACH"
+    assert result["critical_count"] == 1
+    assert result["critical_processes"][0]["pid"] == 1337
+    assert "sensitive_file_access" in result["critical_processes"][0]["reasons"]
+
+
+def test_parse_ps_windows_clean_on_benign_and_winrm_err():
+    ex = _executor()
+    benign = ex._parse_ps_windows(
+        json.dumps({"pid": 4, "ppid": 0, "name": "System", "cmd": None, "user": "SYSTEM"})
+    )
+    assert benign["assessment"] == "CLEAN"
+    assert benign["total_processes"] == 1  # bare object coerced to one-row list
+    err = ex._parse_ps_windows("WINRM_ERR(-1): boom")
+    assert err["assessment"] == "CLEAN"
+    assert "WINRM_ERR" in err["error"]

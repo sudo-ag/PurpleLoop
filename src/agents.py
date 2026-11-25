@@ -22,6 +22,12 @@ LINUX_ONLY_SENSORS = frozenset({
     "investigate_box_anomalies", "investigate_web_requests", "investigate_docker",
 })
 
+# Windows-specific sensors — the mirror of the above. Relabeled not_applicable on
+# a confirmed Linux target so blue can't run a PowerShell sensor where it no-ops.
+WINDOWS_ONLY_SENSORS = frozenset({
+    "investigate_processes_windows",
+})
+
 
 RED_SYSTEM_PROMPT = """You are a Red Team operator. Your goal is to perform reconnaissance,
 exploit vulnerabilities, and capture the flag (CTF).
@@ -666,6 +672,18 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_processes_windows',
+                        'description': 'WINDOWS-ONLY process sensor — use this instead of investigate_processes when investigate_environment reports the target OS is windows. Lists processes with full command lines and owners, flagging reverse shells, C2, and sensitive-file access.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_network',
                         'description': 'Examine network connections and listening ports on the target system for suspicious activity. Returns structured data with connection details and suspicion flags.',
                         'parameters': {
@@ -1200,6 +1218,15 @@ class Agent:
                     "summary": f"{name} is a Linux sensor; no Windows implementation yet.",
                 })
 
+        # Mirror guard: a Windows sensor on a confirmed Linux target would no-op
+        # (no PowerShell host); relabel not_applicable rather than report CLEAN.
+        if name in WINDOWS_ONLY_SENSORS and self.role == "blue":
+            if getattr(self.executor, "detected_os", "windows") == "linux":
+                return json.dumps({
+                    "tool": name, "status": "not_applicable", "detected_os": "linux",
+                    "summary": f"{name} is a Windows sensor; the target is Linux.",
+                })
+
         if name == 'investigate_environment':
             return json.dumps(self.executor.investigate_environment())
 
@@ -1235,6 +1262,13 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "investigate_processes", "status": "error", "error": str(e)})
+
+        elif tool_call['function']['name'] == 'investigate_processes_windows':
+            try:
+                result = self.executor.investigate_processes_windows()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_processes_windows", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'investigate_network':
             try:

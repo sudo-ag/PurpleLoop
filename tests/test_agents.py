@@ -160,3 +160,23 @@ def test_guard_allows_environment_and_nonsensor_on_windows():
     ex.investigate_environment.assert_called_once()
     blue.process_tool_call({"function": {"name": "execute_command", "arguments": {"command": "x"}}})
     ex.execute.assert_called()
+
+
+# --- mirror guard: Windows sensors relabel not_applicable on Linux -------------
+
+def test_windows_sensor_runs_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.investigate_processes_windows.return_value = {"tool": "investigate_processes_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_processes_windows", "arguments": {}}})
+    ex.investigate_processes_windows.assert_called_once()
+
+
+def test_windows_sensor_not_applicable_on_linux():
+    ex = MagicMock()
+    ex.detected_os = "linux"
+    blue = Agent(role="blue", executor=ex, model="m")
+    out = blue.process_tool_call({"function": {"name": "investigate_processes_windows", "arguments": {}}})
+    assert "not_applicable" in out
+    ex.investigate_processes_windows.assert_not_called()

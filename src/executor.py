@@ -668,6 +668,18 @@ class ToolExecutor:
                   f"{shlex.quote(self.host)} {shlex.quote(self.user)} {shlex.quote(self.pwd)}")
         return jump.execute(remote).strip()
 
+    def _ps(self, script: str) -> str:
+        """Run a PowerShell script on the target and return its stdout.
+
+        WinRM's run_cmd lands in cmd.exe, where PS cmdlets and quoting die; so we
+        hand cmd a `powershell -EncodedCommand <base64-UTF16LE>`, which carries an
+        arbitrary script with zero nested-quote escaping. Windows-only — only the
+        winrm transport reaches a PowerShell host."""
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+        return self.execute(
+            f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
+        )
+
     @property
     def detected_os(self) -> str:
         """Target OS, probed once per analysis window. 'linux' if `uname -s`
@@ -1324,6 +1336,53 @@ class ToolExecutor:
             "ps aux 2>/dev/null || ps -ef 2>/dev/null || true"
         )
         return self._parse_ps(raw)
+
+    def investigate_processes_windows(self) -> Dict[str, Any]:
+        """Windows counterpart of investigate_processes. Win32_Process carries the
+        full CommandLine (where the attacker-correlated signal lives); GetOwner
+        attributes each process to a user so privileged-shell heuristics apply."""
+        raw = self._ps(
+            "Get-CimInstance Win32_Process | ForEach-Object { "
+            "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner "
+            "-ErrorAction SilentlyContinue; "
+            "[pscustomobject]@{ pid=$_.ProcessId; ppid=$_.ParentProcessId; "
+            "name=$_.Name; cmd=$_.CommandLine; user=$o.User } } | "
+            "ConvertTo-Json -Compress"
+        )
+        return self._parse_ps_windows(raw)
+
+    def _parse_ps_windows(self, raw: str) -> Dict[str, Any]:
+        """Parse Win32_Process JSON into the shared process-result shape, scoring
+        each process with the SAME suspicion helpers as Linux `ps` so blue's
+        doctrine (reverse shells, sensitive-file access, C2 ports, exploit
+        frameworks) transfers cross-OS unchanged."""
+        if not raw or raw.strip().startswith("WINRM_ERR"):
+            return {
+                "tool": "investigate_processes_windows",
+                "error": raw.strip() or "No process list available",
+                "processes": [], "suspicious_processes": [], "critical_processes": [],
+                "suspicious_count": 0, "critical_count": 0,
+                "summary": "No process list available.", "assessment": "CLEAN",
+                "recommendation": "Investigate any suspicious processes.",
+            }
+        try:
+            records = json.loads(raw)
+        except (ValueError, TypeError):
+            records = []
+        if isinstance(records, dict):  # ConvertTo-Json emits a bare object for one row
+            records = [records]
+
+        processes: List[Dict[str, Any]] = []
+        for rec in records:
+            cmd = (rec.get("cmd") or rec.get("name") or "").strip()
+            user = (rec.get("user") or "").strip()
+            proc = {
+                "pid": rec.get("pid"), "user": user,
+                "cpu": "0", "mem": "0", "command": cmd,  # Win32_Process has no %cpu/%mem
+            }
+            proc.update(_score_windows_proc(user, cmd))
+            processes.append(proc)
+        return self._process_result(processes, "investigate_processes_windows")
 
     def investigate_network(self) -> Dict[str, Any]:
         """
@@ -2197,6 +2256,16 @@ class ToolExecutor:
                 if proc.get("suspicious"):
                     suspicious.append(proc)
 
+        return self._process_result(processes, "investigate_processes")
+
+    def _process_result(
+        self, processes: List[Dict[str, Any]], tool: str
+    ) -> Dict[str, Any]:
+        """Shared tail for process sensors (Linux `ps` and Windows CIM): rank,
+        trim, summarize, and assess a list of parsed process dicts. Each dict
+        carries pid/user/cpu/mem/command plus suspicion flags set by the
+        OS-specific parser, so the detection doctrine stays one codepath."""
+        suspicious = [p for p in processes if p.get("suspicious")]
         critical = [p for p in suspicious if p.get("critical")]
         suspicious_count = len(suspicious)
         critical_count = len(critical)
@@ -2235,7 +2304,7 @@ class ToolExecutor:
             summary += " No obvious suspicious processes."
 
         return {
-            "tool": "investigate_processes",
+            "tool": tool,
             "total_processes": len(processes),
             "shown_count": len(trimmed),
             "processes": trimmed,
@@ -3236,6 +3305,37 @@ def _parse_ps_line(line: str) -> Optional[Dict[str, Any]]:
         "critical": critical,
         "reasons": suspicion,
     }
+
+
+def _score_windows_proc(user: str, cmd: str) -> Dict[str, Any]:
+    """Suspicion scoring for a Windows process, reusing the Linux cmd heuristics.
+    The command-line signals (reverse shell, sensitive-file access, network tool,
+    C2 port, exploit framework) are OS-agnostic; only the privileged-owner check
+    differs (SYSTEM/Administrator here, root on Linux).
+
+    shortcut: the network-tool / reverse-shell markers are Linux-shaped
+    (`/bin/sh`, basename without `.exe`), so a Windows `ncat.exe -e cmd.exe`
+    shell is missed; file-access and exploit-framework signals do transfer.
+    Upgrade with Windows reverse-shell markers when red gets Windows doctrine."""
+    suspicion: List[str] = []
+    critical = False
+    if user.split("\\")[-1].lower() in ("system", "administrator") and _is_shell_cmd(cmd):
+        suspicion.append("privileged_shell")
+    if _cmd_accesses_file(cmd, ["flag", "sensitive", "shadow"]):
+        suspicion.append("sensitive_file_access")
+        critical = True
+    if _is_reverse_shell(cmd):
+        suspicion.append("reverse_shell")
+        critical = True
+    if _is_network_tool(cmd):
+        suspicion.append("network_tool")
+        if _has_c2_port(cmd):
+            critical = True
+    cmd_lower = cmd.lower()
+    if "msf" in cmd_lower or "metasploit" in cmd_lower:
+        suspicion.append("exploit_framework")
+        critical = True
+    return {"suspicious": len(suspicion) > 0, "critical": critical, "reasons": suspicion}
 
 
 def _is_shell_cmd(cmd: str) -> bool:
