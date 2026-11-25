@@ -26,6 +26,7 @@ LINUX_ONLY_SENSORS = frozenset({
 # a confirmed Linux target so blue can't run a PowerShell sensor where it no-ops.
 WINDOWS_ONLY_SENSORS = frozenset({
     "investigate_processes_windows",
+    "investigate_logins_windows",
 })
 
 
@@ -684,6 +685,18 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_logins_windows',
+                        'description': 'WINDOWS-ONLY logon sensor — use this instead of investigate_logs when the target OS is windows. Reads Security Event Log 4624 (logon) / 4625 (failed logon), attributing source IPs. A successful remote logon from a non-control IP is an attacker foothold.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_network',
                         'description': 'Examine network connections and listening ports on the target system for suspicious activity. Returns structured data with connection details and suspicion flags.',
                         'parameters': {
@@ -1269,6 +1282,13 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "investigate_processes_windows", "status": "error", "error": str(e)})
+
+        elif tool_call['function']['name'] == 'investigate_logins_windows':
+            try:
+                result = self.executor.investigate_logins_windows()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_logins_windows", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'investigate_network':
             try:

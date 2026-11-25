@@ -783,6 +783,20 @@ class ToolExecutor:
         SSH, so controller/target time skew can't shift the window.
         """
         self._detected_os = None  # re-probe OS per episode (reused executor)
+        if self.transport == "winrm":
+            # Windows has no syslog line-window; the epoch alone anchors the
+            # Get-WinEvent StartTime filter. UtcNow.ToUnixTimeSeconds is an int
+            # and culture-independent (unlike Get-Date -UFormat %s).
+            out = self._ps("[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()").strip()
+            try:
+                self.analysis_since_epoch = int(out)
+            except ValueError:
+                self.analysis_since_epoch = None
+                logger.warning("Could not read Windows target clock; no login window.")
+            self.analysis_since = None  # syslog line-window unused on Windows
+            self._escalation_cache = None
+            self._uid0_baseline = None
+            return
         # Read the target's wall clock as syslog-style text ("2026 Oct  8 22:22:16")
         # and convert it with the SAME parser used for log lines. A raw `date +%s`
         # is an absolute epoch, but syslog lines are parsed as naive local time;
@@ -1336,6 +1350,123 @@ class ToolExecutor:
             "ps aux 2>/dev/null || ps -ef 2>/dev/null || true"
         )
         return self._parse_ps(raw)
+
+    def investigate_logins_windows(self) -> Dict[str, Any]:
+        """Windows counterpart of investigate_logs(auth): Security Event Log 4624
+        (logon) / 4625 (failed logon), window-bound and source-IP attributed. A
+        successful remote logon from any IP other than blue's own control channel
+        is an earned foothold — the same discriminator the Linux auth sensor uses."""
+        window = ""
+        if self.analysis_since_epoch is not None:
+            window = (f"$f.StartTime=[DateTimeOffset]::FromUnixTimeSeconds("
+                      f"{int(self.analysis_since_epoch)}).LocalDateTime; ")
+        script = (
+            "$f=@{LogName='Security';Id=4624,4625}; " + window +
+            "try { $ev=Get-WinEvent -FilterHashtable $f -MaxEvents 500 -ErrorAction Stop } "
+            "catch { if ($_.Exception.Message -match 'No events were found') "
+            "{ Write-Output '[]'; exit } else { Write-Output ('GWERR: ' + "
+            "$_.Exception.Message); exit } } "
+            "$ev | ForEach-Object { $x=[xml]$_.ToXml(); $d=@{}; "
+            "$x.Event.EventData.Data | ForEach-Object { $d[$_.Name]=$_.'#text' }; "
+            "[pscustomobject]@{ id=$_.Id; time=$_.TimeCreated.ToString('o'); "
+            "user=$d['TargetUserName']; ip=$d['IpAddress']; "
+            "logontype=$d['LogonType'] } } | ConvertTo-Json -Compress"
+        )
+        return self._parse_logins_windows(self._ps(script))
+
+    def _parse_logins_windows(self, raw: str) -> Dict[str, Any]:
+        """Parse 4624/4625 JSON into the auth-sensor shape. A read error is a
+        SENSOR GAP (UNAVAILABLE), never a clean box — the same anti-false-CLEAN
+        rule as the Linux auth parser."""
+        text = (raw or "").strip()
+        if not text or text.startswith("WINRM_ERR") or text.startswith("GWERR"):
+            return {
+                "tool": "investigate_logins_windows",
+                "error": text or "Security log empty or unreadable",
+                "events": [], "failed_attempts": 0, "successful_logins": 0,
+                "flag_access_detected": False, "suspicious_events": 0,
+                "suspicious_ips": [], "foothold_ips": [], "suspicious_users": [],
+                "summary": "Security log unreadable (access denied / WinRM error) — "
+                           "NOT a clean result.",
+                "assessment": "UNAVAILABLE",
+                "recommendation": "Logon visibility is lost. Check WinRM privileges "
+                                  "(admin needed to read the Security log).",
+            }
+        try:
+            records = json.loads(text)
+        except (ValueError, TypeError):
+            records = []
+        if isinstance(records, dict):
+            records = [records]
+
+        # Blue's own control channel: the jump IP on WinRM (no auth.log-style
+        # control-source probe runs on Windows). Local/empty IPs aren't remote.
+        control_ip = self.control_source_ip or (
+            self.jump_host if self.transport == "winrm" else None)
+        local_ips = {"", "-", "::1", "127.0.0.1", "::0", "0.0.0.0"}
+
+        events, failed, success = [], 0, 0
+        ioc_ips: set = set()
+        foothold_ips: set = set()
+        ioc_users: set = set()
+        for rec in records:
+            eid = str(rec.get("id"))
+            ip = (rec.get("ip") or "").strip()
+            user = (rec.get("user") or "").strip()
+            remote = ip not in local_ips and ip != control_ip
+            if eid == "4625":
+                failed += 1
+                if remote:
+                    ioc_ips.add(ip)
+                if user:
+                    ioc_users.add(user)
+                events.append({"event": "Failed logon", "severity": "medium",
+                               "id": eid, "ip": ip, "user": user})
+            elif eid == "4624":
+                success += 1
+                if remote:
+                    ioc_ips.add(ip)
+                    foothold_ips.add(ip)
+                    if user:
+                        ioc_users.add(user)
+                    events.append({"event": "Remote logon (earned foothold)",
+                                   "severity": "high", "id": eid, "ip": ip,
+                                   "user": user, "logontype": rec.get("logontype")})
+                else:
+                    events.append({"event": "Local/control logon (self)",
+                                   "severity": "informational", "id": eid,
+                                   "ip": ip, "user": user})
+
+        suspicious_count = sum(
+            1 for e in events if e.get("severity") in ("medium", "high"))
+        assessment = (
+            "SUSPICIOUS" if foothold_ips
+            else "MONITOR" if failed > 2
+            else "CLEAN"
+        )
+        summary = (f"Security logons: {success} success, {failed} failed.")
+        if foothold_ips:
+            summary += f" Remote foothold logon from: {', '.join(sorted(foothold_ips))}."
+        return {
+            "tool": "investigate_logins_windows",
+            "total_events": len(records),
+            "events": _compact_log_events(events),
+            "failed_attempts": failed,
+            "successful_logins": success,
+            "flag_access_detected": False,
+            "suspicious_events": suspicious_count,
+            "suspicious_ips": sorted(ioc_ips),
+            "foothold_ips": sorted(foothold_ips),
+            "suspicious_users": sorted(ioc_users),
+            "summary": summary,
+            "assessment": assessment,
+            "recommendation": (
+                "A remote logon from a non-control IP is an attacker foothold. "
+                "Correlate with processes/persistence and consider eviction."
+                if foothold_ips else
+                "Monitor failed logons; consider blocking repeat source IPs."
+            ),
+        }
 
     def investigate_processes_windows(self) -> Dict[str, Any]:
         """Windows counterpart of investigate_processes. Win32_Process carries the

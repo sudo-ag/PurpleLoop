@@ -873,3 +873,46 @@ def test_parse_ps_windows_clean_on_benign_and_winrm_err():
     err = ex._parse_ps_windows("WINRM_ERR(-1): boom")
     assert err["assessment"] == "CLEAN"
     assert "WINRM_ERR" in err["error"]
+
+
+# --- Windows logins sensor (Security Event Log 4624/4625) ----------------------
+
+def _winrm_executor():
+    return ToolExecutor(host="192.168.64.17", user="vagrant", pwd="vagrant",
+                        transport="winrm", jump_host="192.168.64.11",
+                        jump_user="kali", jump_pwd="kali", timeout=30)
+
+
+def test_parse_logins_windows_remote_foothold():
+    ex = _winrm_executor()
+    raw = json.dumps([
+        {"id": 4624, "time": "t", "user": "Administrator",
+         "ip": "192.168.64.11", "logontype": "3"},   # jump == control, self
+        {"id": 4624, "time": "t", "user": "attacker",
+         "ip": "10.6.6.6", "logontype": "3"},          # remote foothold
+        {"id": 4625, "time": "t", "user": "guest", "ip": "10.6.6.6", "logontype": "3"},
+    ])
+    r = ex._parse_logins_windows(raw)
+    assert r["successful_logins"] == 2
+    assert r["failed_attempts"] == 1
+    assert r["foothold_ips"] == ["10.6.6.6"]      # jump IP excluded as control
+    assert r["assessment"] == "SUSPICIOUS"
+
+
+def test_parse_logins_windows_unavailable_on_error():
+    ex = _winrm_executor()
+    for bad in ("WINRM_ERR(-1): x", "GWERR: Access is denied", ""):
+        r = ex._parse_logins_windows(bad)
+        assert r["assessment"] == "UNAVAILABLE"
+    clean = ex._parse_logins_windows("[]")
+    assert clean["assessment"] == "CLEAN"
+    assert clean["foothold_ips"] == []
+
+
+def test_mark_analysis_window_windows_reads_epoch_via_ps():
+    ex = _winrm_executor()
+    with patch.object(ex, "_ps", return_value="1795646486\n") as ps:
+        ex.mark_analysis_window()
+    ps.assert_called_once()
+    assert ex.analysis_since_epoch == 1795646486
+    assert ex.analysis_since is None  # syslog line-window unused on Windows
