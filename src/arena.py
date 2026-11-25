@@ -360,6 +360,7 @@ def build_agents(
     *,
     red_model: Optional[str] = None,
     blue_model: Optional[str] = None,
+    transport: str = "ssh",
 ) -> "tuple[Agent, Agent]":
     """Build red/blue once; they are reused across episodes so their experience
     (via knowledge.json) compounds. red_model/blue_model override `model`
@@ -369,7 +370,13 @@ def build_agents(
         red_ex: Any = MockExecutor()
         blue_ex: Any = red_ex
     else:
-        blue_ex = ToolExecutor(host=host, user=user, pwd=pwd, dojo_exploit_ok=(host != "mock"))
+        # A winrm target is unreachable directly (macOS entitlement), so even
+        # blue — normally a resident, direct connection — must route through the
+        # jump host for winrm. For ssh, blue stays direct (no jump).
+        blue_jump = (dict(jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd)
+                     if transport == "winrm" else {})
+        blue_ex = ToolExecutor(host=host, user=user, pwd=pwd, dojo_exploit_ok=(host != "mock"),
+                               transport=transport, **blue_jump)
         if jump_host:
             # Earned red starts with NO target credential — it must crack one and
             # prove it via use_credential; handed red keeps the configured cred.
@@ -380,6 +387,7 @@ def build_agents(
                 jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
                 require_foothold=earned,
                 dojo_exploit_ok=(host != "mock"),
+                transport=transport,
             )
             if earned:
                 # Task 3 (family2-network-rce): a cold msfconsole module-cache
@@ -429,6 +437,7 @@ def run_episodes(
     objective: str = "root",
     red_model: Optional[str] = None,
     blue_model: Optional[str] = None,
+    transport: str = "ssh",
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary. red_model/blue_model override `model` per side."""
@@ -438,7 +447,7 @@ def run_episodes(
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
     red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe, objective,
-                             red_model=red_model, blue_model=blue_model)
+                             red_model=red_model, blue_model=blue_model, transport=transport)
     # --narrate: polish each debrief into prose via the driver model (reuses
     # blue's client). None (default) keeps the deterministic, reproducible report.
     polish = make_polish(blue.client, blue.model) if narrate else None
@@ -504,6 +513,8 @@ def main() -> None:
                    help="Shared driver model for both agents; --red-model/--blue-model override per side.")
     p.add_argument("--red-model", default=None, help="Override the red agent's model (falls back to --model).")
     p.add_argument("--blue-model", default=None, help="Override the blue agent's model (falls back to --model).")
+    p.add_argument("--transport", choices=["ssh", "winrm"], default="ssh",
+                   help="Target transport. 'winrm' (Windows) is jump-routed through --jump-host, which must run pywinrm.")
     p.add_argument("--max-turns", type=int, default=20)
     p.add_argument("--user", default="vagrant")
     p.add_argument("--pwd", default="vagrant")
@@ -526,7 +537,7 @@ def main() -> None:
         jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned, observe=a.observe,
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
         reset=not a.no_reset, narrate=a.narrate, objective=a.objective,
-        red_model=a.red_model, blue_model=a.blue_model,
+        red_model=a.red_model, blue_model=a.blue_model, transport=a.transport,
     )
 
 

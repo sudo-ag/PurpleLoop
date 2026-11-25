@@ -222,3 +222,13 @@ def test_build_agents_per_side_model_override():
     # default (no override) = both use the shared positional model
     red2, blue2 = build_agents(*_ARGS, evade=False, earned=True, observe=False)
     assert red2.model == blue2.model == "llama3.2:latest"
+
+
+def test_build_agents_winrm_transport_selects_winrm_executor():
+    # transport="winrm" => target executors speak winrm and carry jump coords
+    # (winrm is jump-routed); default stays ssh so Linux runs are unchanged.
+    red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False, transport="winrm")
+    assert blue.executor.transport == "winrm"
+    assert blue.executor.jump_host == "192.168.64.11"
+    red2, blue2 = build_agents(*_ARGS, evade=False, earned=True, observe=False)
+    assert blue2.executor.transport == "ssh"

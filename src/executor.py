@@ -129,6 +129,27 @@ _SSH_CONFIG_TEMPLATE = """Host *
     LogLevel ERROR
 """
 
+# Runs ON the jump host (which has pywinrm + native LAN reach to the Windows
+# target). Reads the base64 command from stdin and the target host/user/pwd from
+# argv, runs it over WinRM/NTLM, prints stdout, or `WINRM_ERR(<code>): <stderr>`
+# on a nonzero exit / exception. Shipped to the jump as a file so the dynamic
+# command never has to survive shell re-quoting.
+_WINRM_RUNNER = r'''import sys, base64, winrm
+host, user, pwd = sys.argv[1], sys.argv[2], sys.argv[3]
+cmd = base64.b64decode(sys.stdin.read()).decode("utf-8", "replace")
+try:
+    s = winrm.Session("http://%s:5985/wsman" % host, auth=(user, pwd),
+                      transport="ntlm", server_cert_validation="ignore")
+    r = s.run_cmd(cmd)
+    out = (r.std_out or b"").decode("utf-8", "replace")
+    err = (r.std_err or b"").decode("utf-8", "replace")
+    sys.stdout.write(out if r.status_code == 0
+                     else "WINRM_ERR(%d): %s" % (r.status_code, err))
+except Exception as e:
+    sys.stdout.write("WINRM_ERR(-1): %s" % e)
+'''
+_WINRM_RUNNER_PATH = "/tmp/pl_winrm_runner.py"
+
 
 def _compact_log_events(
     events: List[Dict[str, Any]],
@@ -302,11 +323,18 @@ class ToolExecutor:
         jump_pwd: Optional[str] = None,
         require_foothold: bool = False,
         dojo_exploit_ok: bool = False,
+        transport: str = "ssh",
     ):
         self.host = host
         self.user = user
         self.pwd = pwd
         self.timeout = timeout
+        # Transport to the target: "ssh" (default) or "winrm". A winrm target is
+        # unreachable from the macOS venv directly (Local Network entitlement), so
+        # winrm calls are routed through the jump host, which runs pywinrm natively.
+        self.transport = transport
+        self._winrm_jump: Optional["ToolExecutor"] = None
+        self._winrm_ready = False
         # Narrow, dojo-scoped exception: when True, passwd/shadow keywords are
         # exempt from FORBIDDEN_KEYWORDS. Destructive keywords stay blocked
         # regardless. Only set on target executors for a real (non-mock) host.
@@ -575,10 +603,16 @@ class ToolExecutor:
         self._check_forbidden(command, "remote")
 
         if self.require_foothold and not self._has_foothold:
+            # Foothold gate precedes transport dispatch: an earned executor with
+            # no proven cred must not auth (winrm would otherwise connect with
+            # empty creds).
             return ("No foothold on the target yet. From your attacker box "
                     "(run_on_attacker), recon and crack a credential, then call "
                     "use_credential(username, password) to establish a foothold "
                     "before running commands on the target.")
+
+        if self.transport == "winrm":
+            return self._run_winrm(command)
 
         if self._uses_jump:
             return self._run_jump_session(command)
@@ -602,6 +636,34 @@ class ToolExecutor:
         if not ok:
             return f"Error: SSH connection to {self.host} failed: {text}"
         return text
+
+    def _winrm_jump_exec(self) -> "ToolExecutor":
+        """Lazily open a plain SSH executor to the jump host — the entitled hop
+        that actually runs pywinrm against the Windows target."""
+        if self._winrm_jump is None:
+            self._winrm_jump = ToolExecutor(
+                host=self.jump_host, user=self.jump_user, pwd=self.jump_pwd,
+                timeout=self.timeout, dojo_exploit_ok=self.dojo_exploit_ok,
+            )
+        return self._winrm_jump
+
+    def _run_winrm(self, command: str) -> str:
+        """Run `command` on the Windows target via WinRM, executed on the jump
+        host. Returns stdout, or a `WINRM_ERR(...)` string on failure."""
+        jump = self._winrm_jump_exec()
+        if not self._winrm_ready:
+            # shortcut: runner uploaded once per instance, not re-verified — if the
+            # jump's /tmp reaper or a reboot clears it mid-run, calls fail until a
+            # new executor. Upgrade to a per-call existence check if that bites.
+            runner_b64 = base64.b64encode(_WINRM_RUNNER.encode()).decode()
+            jump.execute(f"echo {runner_b64} | base64 -d > {_WINRM_RUNNER_PATH}")
+            self._winrm_ready = True
+        cmd_b64 = base64.b64encode(command.encode()).decode()
+        # host/user/pwd are shell-quoted: a cred with a space or shell metachar
+        # would otherwise argv-split or inject on the jump (base64 is shell-safe).
+        remote = (f"printf %s {cmd_b64} | python3 {_WINRM_RUNNER_PATH} "
+                  f"{shlex.quote(self.host)} {shlex.quote(self.user)} {shlex.quote(self.pwd)}")
+        return jump.execute(remote).strip()
 
     def set_target_credential(self, user: str, pwd: str) -> Dict[str, Any]:
         """Adopt a target credential red claims to have cracked, proving it works.
