@@ -24,6 +24,36 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-24 cont'd — harden run: loop confirmed two-sided on 3 clean eps; stalled on SSH flap)
+
+Re-ran the 5-ep non-observe harden run on `glm-5.3-flash:cloud` (cloud healthy at
+launch, no 502 storm). **Got 3 clean episodes, then killed it** — episode 4
+stalled at 106 min (3.5× a normal ~30-min episode) on a **flapping SSH layer**
+(7 ControlMaster drops: 4× `.12`, 3× `.11`), and data gathered through a
+degrading SSH layer is untrustworthy (same reasoning as last session's 502
+abort). The model was fine — 8 scattered 502s across 192 calls, all absorbed;
+the bottleneck was SSH/box, not the endpoint.
+
+**Result (3 eps): red 1 / blue 1 / draw 1.** This confirms the core goal: the
+persistence loop is **two-sided in non-observe** — blue reached
+`remove_persistence` and evicted red (ep2, 15 turns), glm planted reliably every
+episode, and there was **no 4-red wipeout** like the pre-fix run. The thing the
+harden run was meant to prove is proven on 3 episodes.
+
+- ep1 → red (24 turns, blue detected but didn't evict)
+- ep2 → **blue** (15 turns, detected + evicted via `remove_persistence`)
+- ep3 → draw (24 turns, blue detected, nobody closed it)
+
+**Box state: `.12` is likely DIRTY** — ep4 was killed mid-episode so no
+`scripted_reset` ran; a planted key may remain and the SSH layer was flapping.
+**Reboot `.12` from UTM before any rerun**, then ping + sshd check.
+
+**NEXT:** (1) reboot `.12`, clean-check. (2) Optional: a fresh 5-ep run for a
+full trustworthy sample, but only if you want the extra episodes — the loop is
+already confirmed two-sided. (3) If SSH flapping recurs on a healthy box,
+investigate ControlMaster stability (keepalive / `ServerAliveInterval`) before
+blaming the cloud.
+
 ## Latest status (2026-11-24 — red plant FIXED on glm-5.3-flash; harden run pending healthy cloud)
 
 Red's meterpreter plant blocker is **fixed and committed** (`d18908b`, pushed).
