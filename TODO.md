@@ -24,6 +24,51 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-24 cont'd #2 — LOOP PROVEN end-to-end non-observe via per-side model split)
+
+**The session-long goal is met.** The persistence loop now runs clean end-to-end
+in **non-observe** (the hard mode), and the win came from a new capability:
+**per-side models.** Red and blue shared one `--model`; split into
+`--red-model`/`--blue-model` (each falls back to `--model`). This turns the dojo
+into a **model-vs-model matrix** — benchmark any attacker against any defender.
+
+**Headline result — 5-ep non-observe harden, `--red-model deepseek-v4.1-flash:cloud
+--blue-model glm-5.3-flash:cloud`: blue 4 / red 1 / 0 draws, blue detect 0.80**
+(eps: blue13, blue9, red24, blue7, blue9). Highest detect rate all session, and
+non-observe — glm-blue contains + evicts on its own, no `--observe` crutch.
+
+**Why the split mattered (same attacker throughout):**
+| config | mode | result |
+|--------|------|--------|
+| glm both sides (pre-fix) | non-observe | 4 red / 0 blue — blue never evicted |
+| deepseek both sides | observe | red 2 / blue 1, detect 0.33 |
+| deepseek-R + glm-B | observe | blue 2 / red 1, detect 0.67 |
+| **deepseek-R + glm-B** | **non-observe** | **blue 4 / red 1, detect 0.80** |
+
+deepseek is the stronger **attacker** (plants reliably — clears the gemma bar);
+glm is the stronger **defender**. Running each in its strong role flips a red rout
+into blue dominance.
+
+**Also landed this session (all committed):**
+- `fix(executor)` — SSH ControlMaster keepalive (`ServerAliveInterval=15`
+  /`ServerAliveCountMax=4`). Killed the master-flapping that stalled the prior
+  harden run. **0 SSH drops / 0 502s across 4 runs since.**
+- `feat(arena)` — `--red-model`/`--blue-model` per-side override (+ test).
+- `feat(arena)` — `red_model`/`blue_model` stamped into every episode scorecard,
+  so matrix runs are attributable in `episodes.jsonl`.
+- 593 tests green.
+
+**Knowledge note:** `knowledge.json` now blends glm + deepseek lessons (shared pool,
+not model-scoped). Clean glm-only baseline saved at
+`knowledge.json.1795565389.glm-baseline.bak`.
+
+**NEXT (open ideas, none blocking):**
+1. Fill the matrix: run the other diagonals (glm-R + deepseek-B, each self-vs-self)
+   for a full attacker×defender table now that episodes are model-stamped.
+2. Consider model-scoping `knowledge.json` so a weak model can't pollute a proven
+   config's doctrine (today it's one shared red/blue pool).
+3. `.12` is clean (harden's final reset ran). Boxes idle.
+
 ## Latest status (2026-11-24 cont'd — harden run: loop confirmed two-sided on 3 clean eps; stalled on SSH flap)
 
 Re-ran the 5-ep non-observe harden run on `glm-5.3-flash:cloud` (cloud healthy at
