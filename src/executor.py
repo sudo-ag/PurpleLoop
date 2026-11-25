@@ -335,6 +335,9 @@ class ToolExecutor:
         self.transport = transport
         self._winrm_jump: Optional["ToolExecutor"] = None
         self._winrm_ready = False
+        # Detected target OS ("linux"|"windows"), probed lazily once per analysis
+        # window. Discovered, not told — so a sensor can self-gate on any box.
+        self._detected_os: Optional[str] = None
         # Narrow, dojo-scoped exception: when True, passwd/shadow keywords are
         # exempt from FORBIDDEN_KEYWORDS. Destructive keywords stay blocked
         # regardless. Only set on target executors for a real (non-mock) host.
@@ -665,6 +668,25 @@ class ToolExecutor:
                   f"{shlex.quote(self.host)} {shlex.quote(self.user)} {shlex.quote(self.pwd)}")
         return jump.execute(remote).strip()
 
+    @property
+    def detected_os(self) -> str:
+        """Target OS, probed once per analysis window. 'linux' if `uname -s`
+        reports a Unix kernel, else 'windows' (uname absent / WinRM error)."""
+        if self._detected_os is None:
+            raw = self.execute("uname -s 2>/dev/null || true")
+            self._detected_os = "linux" if ("Linux" in raw or "Darwin" in raw) else "windows"
+        return self._detected_os
+
+    def investigate_environment(self) -> Dict[str, Any]:
+        """Report the detected target OS so blue knows which sensors apply."""
+        os_name = self.detected_os
+        return {
+            "tool": "investigate_environment",
+            "detected_os": os_name,
+            "probe": "uname -s",
+            "summary": f"Target OS detected as {os_name}.",
+        }
+
     def set_target_credential(self, user: str, pwd: str) -> Dict[str, Any]:
         """Adopt a target credential red claims to have cracked, proving it works.
 
@@ -738,6 +760,7 @@ class ToolExecutor:
         longer win on stale logs. Anchored to the target's own clock, read over
         SSH, so controller/target time skew can't shift the window.
         """
+        self._detected_os = None  # re-probe OS per episode (reused executor)
         # Read the target's wall clock as syslog-style text ("2026 Oct  8 22:22:16")
         # and convert it with the SAME parser used for log lines. A raw `date +%s`
         # is an absolute epoch, but syslog lines are parsed as naive local time;

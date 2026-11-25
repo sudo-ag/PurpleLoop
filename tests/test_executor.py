@@ -780,3 +780,46 @@ def test_winrm_earned_without_foothold_does_not_auth():
     ex._run_winrm = boom
     out = ex.execute_remote("whoami")
     assert "foothold" in out.lower()
+
+
+# --- environment self-check: detected_os probe + investigate_environment -------
+
+def test_detect_os_linux_when_uname_reports_linux():
+    ex = ToolExecutor(host="h", user="u", pwd="p")
+    ex.execute = lambda c: "Linux"
+    assert ex.detected_os == "linux"
+
+
+def test_detect_os_windows_when_probe_lacks_linux():
+    ex = ToolExecutor(host="h", user="u", pwd="p")
+    ex.execute = lambda c: "WINRM_ERR(1): 'uname' is not recognized"
+    assert ex.detected_os == "windows"
+
+
+def test_detected_os_is_cached_one_probe():
+    ex = ToolExecutor(host="h", user="u", pwd="p")
+    calls = {"n": 0}
+
+    def probe(c):
+        calls["n"] += 1
+        return "Linux"
+
+    ex.execute = probe
+    _ = ex.detected_os
+    _ = ex.detected_os
+    assert calls["n"] == 1
+
+
+def test_investigate_environment_reports_detected_os():
+    ex = ToolExecutor(host="h", user="u", pwd="p")
+    ex.execute = lambda c: "Linux x86_64"
+    r = ex.investigate_environment()
+    assert r["tool"] == "investigate_environment" and r["detected_os"] == "linux"
+
+
+def test_detected_os_resets_with_analysis_window():
+    ex = ToolExecutor(host="h", user="u", pwd="p")
+    ex.execute = lambda c: "Linux"
+    _ = ex.detected_os
+    ex.mark_analysis_window()
+    assert ex._detected_os is None
