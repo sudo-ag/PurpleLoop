@@ -129,3 +129,34 @@ def test_env_notes_from_profile_reach_the_prompt():
     prof = TargetProfile(host="x", env_notes="HINT: a payroll web app is present")
     red = RedAgent(executor=MockExecutor(), earned=True, target=prof)
     assert "payroll web app" in red.system_prompt
+
+
+# --- self-checker: Linux sensors relabel not_applicable off-Linux --------------
+
+def test_linux_sensor_not_applicable_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    blue = Agent(role="blue", executor=ex, model="m")
+    out = blue.process_tool_call({"function": {"name": "investigate_processes", "arguments": {}}})
+    assert "not_applicable" in out
+    ex.investigate_processes.assert_not_called()
+
+
+def test_linux_sensor_runs_when_linux():
+    ex = MagicMock()
+    ex.detected_os = "linux"
+    ex.investigate_processes.return_value = {"tool": "investigate_processes", "ok": True}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_processes", "arguments": {}}})
+    ex.investigate_processes.assert_called_once()
+
+
+def test_guard_allows_environment_and_nonsensor_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.investigate_environment.return_value = {"tool": "investigate_environment", "detected_os": "windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_environment", "arguments": {}}})
+    ex.investigate_environment.assert_called_once()
+    blue.process_tool_call({"function": {"name": "execute_command", "arguments": {"command": "x"}}})
+    ex.execute.assert_called()
