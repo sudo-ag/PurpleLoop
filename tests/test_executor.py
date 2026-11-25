@@ -683,3 +683,66 @@ def test_set_target_credential_failure_keeps_no_foothold():
     r = ex.set_target_credential("han_solo", "wrongpw")
     assert r["status"] == "failed"
     assert ex._has_foothold is False and ex.user == ""
+
+
+# --- WinRM transport (jump-routed; runs the winrm call on the Kali jump) ------
+
+def _winrm_ex():
+    return ToolExecutor(host="10.0.0.9", user="vagrant", pwd="vagrant",
+                        jump_host="10.0.0.1", jump_user="kali", jump_pwd="kali",
+                        transport="winrm")
+
+
+def test_default_transport_is_ssh():
+    assert ToolExecutor(host="h", user="u", pwd="p").transport == "ssh"
+
+
+def test_execute_remote_winrm_dispatches_to_run_winrm():
+    ex = _winrm_ex()
+    seen = {}
+
+    def fake(c):
+        seen["cmd"] = c
+        return "DISPATCHED"
+
+    ex._run_winrm = fake
+    assert ex.execute_remote("whoami") == "DISPATCHED"
+    assert seen["cmd"] == "whoami"
+
+
+def test_ssh_transport_does_not_call_winrm():
+    ex = ToolExecutor(host="h", user="u", pwd="p")  # default ssh
+    ex._run_winrm = lambda c: "WRONG"
+    ex._master_alive = lambda: True
+    ex._run_session = lambda c: (True, "ssh-out")
+    assert ex.execute_remote("x") == "ssh-out"
+
+
+def test_run_winrm_invokes_runner_on_jump_with_target(capfd):
+    ex = _winrm_ex()
+    ex._winrm_ready = True  # skip runner upload
+    sent = {}
+
+    class FakeJump:
+        def execute(self, c):
+            sent["cmd"] = c
+            return "desktop-mp2vnf8\\vagrant"
+
+    ex._winrm_jump = FakeJump()
+    out = ex._run_winrm("whoami")
+    assert out == "desktop-mp2vnf8\\vagrant"
+    # routes through the runner against the Windows target host, creds passed
+    assert "python3" in sent["cmd"]
+    assert "10.0.0.9" in sent["cmd"] and "vagrant" in sent["cmd"]
+
+
+def test_run_winrm_error_string_passthrough():
+    ex = _winrm_ex()
+    ex._winrm_ready = True
+
+    class FakeJump:
+        def execute(self, c):
+            return "WINRM_ERR(1): 'ps' is not recognized as an internal command"
+
+    ex._winrm_jump = FakeJump()
+    assert "WINRM_ERR" in ex._run_winrm("ps aux")
