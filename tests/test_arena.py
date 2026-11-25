@@ -27,6 +27,17 @@ def test_scorecard_in_time_detection_is_detected_with_dwell():
     assert card["dwell"] == 2
 
 
+def test_scorecard_stamps_per_side_models():
+    # Mixed-model runs must record which driver played each side, else matrix
+    # results blur together in episodes.jsonl.
+    card = build_scorecard(_state(turn=6, red_access_turn=4, blue_detect_turn=6), "blue", 2,
+                           red_model="deepseek-v4.1-flash:cloud", blue_model="glm-5.3-flash:cloud")
+    assert card["red_model"] == "deepseek-v4.1-flash:cloud"
+    assert card["blue_model"] == "glm-5.3-flash:cloud"
+    # omitted (legacy callers) = None, not a crash
+    assert build_scorecard(_state(turn=3), "blue", 1)["red_model"] is None
+
+
 def test_scorecard_access_without_detection_is_missed():
     card = build_scorecard(_state(turn=9, red_access_turn=4), "red", 3)
     assert card["blue_outcome"] == "missed"

@@ -68,7 +68,9 @@ def persistence_winner(planted_turn: Optional[int],
 def build_scorecard(state: Any, winner: Optional[str], episode: int,
                     tiers: Optional[List[Dict[str, Any]]] = None,
                     verdict: Optional[str] = None,
-                    objective: str = "root") -> Dict[str, Any]:
+                    objective: str = "root",
+                    red_model: Optional[str] = None,
+                    blue_model: Optional[str] = None) -> Dict[str, Any]:
     """Structured result for one episode, from the orchestrator's ground truth.
 
     `state` is anything exposing the SimulationState fields (duck-typed), so
@@ -101,6 +103,8 @@ def build_scorecard(state: Any, winner: Optional[str], episode: int,
     return {
         "episode": episode,
         "winner": winner,
+        "red_model": red_model,
+        "blue_model": blue_model,
         "turns": g("turn"),
         "red_outcome": "reached" if access is not None else "blocked",
         "red_access_turn": access,
@@ -453,7 +457,8 @@ def run_episodes(
         winner = orch.run_simulation(max_turns=max_turns)
         card = build_scorecard(orch.state, winner, i,
                                tiers=orch.tier_scoreboard(), verdict=orch.verdict(),
-                               objective=objective)
+                               objective=objective,
+                               red_model=red.model, blue_model=blue.model)
         # Persist the full per-episode timeline so every scorecard is auditable —
         # a learning loop is only as trustworthy as our ability to see what
         # actually happened in each episode.
