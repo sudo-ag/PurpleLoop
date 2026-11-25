@@ -42,6 +42,8 @@ spawn -noecho ssh -M -N -f \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=$env(PL_SSH_TIMEOUT) \
+    -o ServerAliveInterval=15 \
+    -o ServerAliveCountMax=4 \
     -o PreferredAuthentications=password \
     -o PubkeyAuthentication=no \
     -o NumberOfPasswordPrompts=1 \
