@@ -353,9 +353,13 @@ def build_agents(
     jump_host: Optional[str], jump_user: str, jump_pwd: str,
     evade: bool, earned: bool, observe: bool,
     objective: str = "root",
+    *,
+    red_model: Optional[str] = None,
+    blue_model: Optional[str] = None,
 ) -> "tuple[Agent, Agent]":
     """Build red/blue once; they are reused across episodes so their experience
-    (via knowledge.json) compounds."""
+    (via knowledge.json) compounds. red_model/blue_model override `model`
+    per side (None = use the shared `model`)."""
     attacker_ex: Any = None
     if host == "mock":
         red_ex: Any = MockExecutor()
@@ -391,10 +395,10 @@ def build_agents(
             red_ex = blue_ex
     kp = REPO / "knowledge.json"
     red = RedAgent(
-        executor=red_ex, model=model, objective=objective,
+        executor=red_ex, model=red_model or model, objective=objective,
         evade=evade, earned=earned, attacker_executor=attacker_ex, knowledge_path=kp,
     )
-    blue = BlueAgent(executor=blue_ex, model=model, observe=observe, knowledge_path=kp)
+    blue = BlueAgent(executor=blue_ex, model=blue_model or model, observe=observe, knowledge_path=kp)
     return red, blue
 
 
@@ -419,15 +423,18 @@ def run_episodes(
     reports_dir: Path = REPORTS_DIR,
     narrate: bool = False,
     objective: str = "root",
+    red_model: Optional[str] = None,
+    blue_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
-    plus a cross-episode summary."""
+    plus a cross-episode summary. red_model/blue_model override `model` per side."""
     model = model or os.getenv("MODEL", "llama3.2:latest")
     reports_dir.mkdir(parents=True, exist_ok=True)
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
-    red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe, objective)
+    red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe, objective,
+                             red_model=red_model, blue_model=blue_model)
     # --narrate: polish each debrief into prose via the driver model (reuses
     # blue's client). None (default) keeps the deterministic, reproducible report.
     polish = make_polish(blue.client, blue.model) if narrate else None
@@ -488,7 +495,10 @@ def main() -> None:
     p = argparse.ArgumentParser(description="PurpleLoop autonomous learning arena")
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--host", default="mock")
-    p.add_argument("--model", default=os.getenv("MODEL", "llama3.2:latest"))
+    p.add_argument("--model", default=os.getenv("MODEL", "llama3.2:latest"),
+                   help="Shared driver model for both agents; --red-model/--blue-model override per side.")
+    p.add_argument("--red-model", default=None, help="Override the red agent's model (falls back to --model).")
+    p.add_argument("--blue-model", default=None, help="Override the blue agent's model (falls back to --model).")
     p.add_argument("--max-turns", type=int, default=20)
     p.add_argument("--user", default="vagrant")
     p.add_argument("--pwd", default="vagrant")
@@ -511,6 +521,7 @@ def main() -> None:
         jump_pwd=a.jump_pwd, evade=a.evade, earned=a.earned, observe=a.observe,
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
         reset=not a.no_reset, narrate=a.narrate, objective=a.objective,
+        red_model=a.red_model, blue_model=a.blue_model,
     )
 
 

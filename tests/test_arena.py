@@ -198,3 +198,16 @@ def test_build_agents_attacker_executor_gets_dojo_exemption():
     # even though the same text would pass on the target channels.
     red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False)
     assert red.attacker_executor.dojo_exploit_ok is True
+
+
+def test_build_agents_per_side_model_override():
+    # --red-model/--blue-model let red and blue run different drivers (e.g.
+    # a strong attacker model vs a strong defender model); None falls back to
+    # the shared --model.
+    red, blue = build_agents(*_ARGS, evade=False, earned=True, observe=False,
+                             red_model="deepseek-v4.1-flash:cloud", blue_model="glm-5.3-flash:cloud")
+    assert red.model == "deepseek-v4.1-flash:cloud"
+    assert blue.model == "glm-5.3-flash:cloud"
+    # default (no override) = both use the shared positional model
+    red2, blue2 = build_agents(*_ARGS, evade=False, earned=True, observe=False)
+    assert red2.model == blue2.model == "llama3.2:latest"
