@@ -394,6 +394,9 @@ class ToolExecutor:
         self._remediated_users: List[str] = []
         # (user, [groups]) blue stripped this run, re-added at disconnect.
         self._revoked_privs: List[tuple] = []
+        # Windows accounts disabled / groups stripped this run, reverted at disconnect.
+        self._win_disabled_users: List[str] = []
+        self._win_revoked_groups: List[tuple] = []
         # Paths blue hardened this run via remediate_finding, each with its
         # pre-change mode+owner so scripted_reset can re-vulnerabilise the box
         # next episode (the dojo must stay attackable; hardening lives in blue's
@@ -529,6 +532,7 @@ class ToolExecutor:
         # Remove any firewall / logging rules blue added, before the master goes.
         self._disable_file_audit()  # winrm: runs via the jump channel, still live
         self._flush_win_blocked()
+        self._restore_win_accounts()
         self._flush_contained()
         self._restore_remediated()
         self._restore_revoked()
@@ -2098,6 +2102,111 @@ class ToolExecutor:
             except Exception:
                 pass
         self._win_blocked_ips.clear()
+
+    def _win_account_ok(self, user: str) -> bool:
+        """True if `user` is a well-formed, non-protected Windows account name blue
+        may act on (not a built-in, not the control account, not option-like)."""
+        if not user or user.startswith("-"):
+            return False
+        if not all(c.isalnum() or c in "_-. \\" for c in user):
+            return False
+        bare = user.split("\\")[-1].lower()
+        return bare not in _WIN_PROTECTED_ACCOUNTS and bare != (self.user or "").lower()
+
+    def _win_kill_user_processes(self, user: str) -> None:
+        """Kill a user's running processes so a reverse shell / foothold dies when
+        the account is disabled (Disable-LocalUser alone only blocks new logons)."""
+        u = user.replace("'", "''")
+        self._ps(
+            "Get-CimInstance Win32_Process | ForEach-Object { "
+            "$o=Invoke-CimMethod -InputObject $_ -MethodName GetOwner -EA SilentlyContinue; "
+            f"if ($o.User -eq '{u}') {{ Stop-Process -Id $_.ProcessId -Force -EA SilentlyContinue }} }}"
+        )
+
+    def remediate_account_windows(self, user: str) -> Dict[str, Any]:
+        """Windows counterpart of remediate_account: disable a compromised local
+        account (Disable-LocalUser) and kill its processes, cutting off the
+        attacker's foothold. Refuses built-in/defender accounts. Reversible: the
+        account is re-enabled at disconnect.
+
+        shortcut: Disable-LocalUser is the LocalAccounts module (Win10/2016+) and
+        local accounts only; a domain account needs net user /active:no."""
+        user = (user or "").strip()
+        f: Dict[str, Any] = {"tool": "remediate_account_windows", "target_user": user,
+                             "remediated": False, "assessment": "INFO", "summary": ""}
+        if self.transport != "winrm":
+            f["assessment"] = "REFUSED"; f["summary"] = "Not a Windows target."; return f
+        if not self._win_account_ok(user):
+            f["assessment"] = "REFUSED"
+            f["summary"] = f"Refused: '{user}' is invalid or a protected/defender account."
+            return f
+        u = user.replace("'", "''")
+        out = self._ps(f"try {{ Disable-LocalUser -Name '{u}' -EA Stop; 'PL_OK' }} "
+                       "catch { $_.Exception.Message }")
+        if "PL_OK" not in out:
+            f["summary"] = f"Failed to disable '{user}': {out.strip()[:160]}"
+            return f
+        self._win_kill_user_processes(user)
+        if user not in self._win_disabled_users:
+            self._win_disabled_users.append(user)
+        f["remediated"] = True
+        f["assessment"] = "REMEDIATED"
+        f["summary"] = f"Account '{user}' disabled and its processes killed."
+        return f
+
+    def revoke_escalation_windows(self, user: str) -> Dict[str, Any]:
+        """Windows counterpart of revoke_escalation: strip a foothold account out of
+        privileged local groups (Administrators, …) and kill its processes, closing
+        the escalation path before it is used. Refuses built-in/defender accounts.
+        Reversible: memberships are restored at disconnect."""
+        user = (user or "").strip()
+        f: Dict[str, Any] = {"tool": "revoke_escalation_windows", "target_user": user,
+                             "revoked_groups": [], "assessment": "INFO", "summary": ""}
+        if self.transport != "winrm":
+            f["assessment"] = "REFUSED"; f["summary"] = "Not a Windows target."; return f
+        if not self._win_account_ok(user):
+            f["assessment"] = "REFUSED"
+            f["summary"] = f"Refused: '{user}' is invalid or a protected/defender account."
+            return f
+        u = user.replace("'", "''")
+        revoked: List[str] = []
+        for group in _WIN_PRIVILEGED_GROUPS:
+            out = self._ps(
+                f"try {{ if (Get-LocalGroupMember -Group '{group}' -Member '{u}' "
+                "-EA SilentlyContinue) { "
+                f"Remove-LocalGroupMember -Group '{group}' -Member '{u}' -EA Stop; "
+                "'PL_OK' } else { 'PL_NOTMEMBER' } } catch { $_.Exception.Message }")
+            if "PL_OK" in out:
+                revoked.append(group)
+        if not revoked:
+            f["assessment"] = "CLEAN"
+            f["summary"] = f"'{user}' is in no privileged group; nothing to revoke."
+            return f
+        self._win_kill_user_processes(user)
+        self._win_revoked_groups.append((user, revoked))
+        f["revoked_groups"] = revoked
+        f["assessment"] = "REVOKED"
+        f["summary"] = f"Stripped '{user}' from {', '.join(revoked)} and killed its processes."
+        return f
+
+    def _restore_win_accounts(self) -> None:
+        """Re-enable accounts disabled and re-add groups stripped this run (best-effort)."""
+        for user in list(self._win_disabled_users):
+            try:
+                self._ps(f"Enable-LocalUser -Name '{user.replace(chr(39), chr(39)*2)}' "
+                         "-EA SilentlyContinue")
+            except Exception:
+                pass
+        self._win_disabled_users.clear()
+        for user, groups in list(self._win_revoked_groups):
+            u = user.replace("'", "''")
+            for g in groups:
+                try:
+                    self._ps(f"Add-LocalGroupMember -Group '{g}' -Member '{u}' "
+                             "-EA SilentlyContinue")
+                except Exception:
+                    pass
+        self._win_revoked_groups.clear()
 
     def _flush_contained(self) -> None:
         """Remove firewall rules this executor added (best-effort)."""
@@ -3685,6 +3794,11 @@ def _find_all_ip(text: str) -> List[str]:
 
 # Accounts blue must never lock/kill — the defender's admin and root.
 _PROTECTED_ACCOUNTS = frozenset({"root", "vagrant"})
+# Windows accounts blue must never disable/strip: built-ins + the control account.
+_WIN_PROTECTED_ACCOUNTS = frozenset({
+    "administrator", "system", "guest", "defaultaccount", "vagrant", "wdagutilityaccount",
+})
+_WIN_PRIVILEGED_GROUPS = ("Administrators", "Backup Operators", "Remote Desktop Users")
 # Groups that hand a foothold a root path; blue strips these to kill escalation.
 _PRIVILEGED_GROUPS = ("docker", "sudo", "admin", "lxd")
 

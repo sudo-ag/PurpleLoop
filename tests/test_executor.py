@@ -1116,3 +1116,41 @@ def test_contain_attacker_windows_blocks_and_tracks():
         ex._flush_win_blocked()
     assert "Remove-NetFirewallRule" in ps2.call_args.args[0]
     assert ex._win_blocked_ips == []
+
+
+# --- Windows account response (remediate_account_windows / revoke_escalation_windows) ---
+
+def test_remediate_account_windows_refusals_and_success():
+    assert _executor().remediate_account_windows("foothold")["assessment"] == "REFUSED"  # ssh
+    ex = _winrm_executor()  # self.user == vagrant
+    assert ex.remediate_account_windows("Administrator")["assessment"] == "REFUSED"
+    assert ex.remediate_account_windows("vagrant")["assessment"] == "REFUSED"
+    with patch.object(ex, "_ps", return_value="PL_OK"):
+        r = ex.remediate_account_windows("foothold")
+    assert r["assessment"] == "REMEDIATED" and r["remediated"] is True
+    assert ex._win_disabled_users == ["foothold"]
+
+
+def test_revoke_escalation_windows_strips_admin_then_clean():
+    ex = _winrm_executor()
+    # Administrators revoked, other groups not-member, then kill call.
+    with patch.object(ex, "_ps", side_effect=["PL_OK", "PL_NOTMEMBER", "PL_NOTMEMBER", ""]):
+        r = ex.revoke_escalation_windows("foothold")
+    assert r["assessment"] == "REVOKED"
+    assert r["revoked_groups"] == ["Administrators"]
+    assert ex._win_revoked_groups == [("foothold", ["Administrators"])]
+    with patch.object(ex, "_ps", return_value="PL_NOTMEMBER"):
+        r2 = ex.revoke_escalation_windows("nobody")
+    assert r2["assessment"] == "CLEAN"
+
+
+def test_restore_win_accounts_reverts():
+    ex = _winrm_executor()
+    ex._win_disabled_users = ["foothold"]
+    ex._win_revoked_groups = [("foothold", ["Administrators"])]
+    calls = []
+    with patch.object(ex, "_ps", side_effect=lambda s: calls.append(s) or ""):
+        ex._restore_win_accounts()
+    assert any("Enable-LocalUser" in c for c in calls)
+    assert any("Add-LocalGroupMember" in c for c in calls)
+    assert ex._win_disabled_users == [] and ex._win_revoked_groups == []

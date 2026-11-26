@@ -935,6 +935,34 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'remediate_account_windows',
+                        'description': 'WINDOWS-ONLY — use this instead of remediate_account when the target OS is windows. Disables a compromised local account and kills its processes (reversible). Refuses built-in/defender accounts. Takes a user argument.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'user': {'type': 'string', 'description': 'The compromised local account to disable, e.g. "foothold".'},
+                            },
+                            'required': ['user'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'revoke_escalation_windows',
+                        'description': 'WINDOWS-ONLY — use this instead of revoke_escalation when the target OS is windows. Strips a foothold account out of privileged local groups (Administrators, …) and kills its processes (reversible). Refuses built-in/defender accounts. Takes a user argument.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'user': {'type': 'string', 'description': 'The foothold account to strip of Administrators, e.g. "foothold".'},
+                            },
+                            'required': ['user'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'remove_persistence',
                         'description': "Strip a planted SSH key out of an account's ~/.ssh/authorized_keys, keeping any pre-existing legitimate key. Call this once investigate_persistence reports a new key on an account — unlike remediate_account/revoke_escalation, this is safe and USEFUL to call on root (stripping root's own planted key is the point; it is not refused here). Takes a user argument.",
                         'parameters': {
@@ -1500,6 +1528,20 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "revoke_escalation", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remediate_account_windows':
+            user = tool_call['function']['arguments'].get('user', "")
+            try:
+                return json.dumps(self.executor.remediate_account_windows(user))
+            except Exception as e:
+                return json.dumps({"tool": "remediate_account_windows", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'revoke_escalation_windows':
+            user = tool_call['function']['arguments'].get('user', "")
+            try:
+                return json.dumps(self.executor.revoke_escalation_windows(user))
+            except Exception as e:
+                return json.dumps({"tool": "revoke_escalation_windows", "status": "error", "error": str(e), "target_user": user})
 
         elif tool_call['function']['name'] == 'remove_persistence':
             # Live even in observe mode, like remediate_account/revoke_escalation:

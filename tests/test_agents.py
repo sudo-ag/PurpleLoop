@@ -243,3 +243,15 @@ def test_contain_windows_routes_and_observe_holds():
                                                     "arguments": {"ip": "10.6.6.6"}}})
     assert "observed" in out2  # held, not executed
     ex.contain_attacker_windows.assert_called_once()  # still only the first (non-observe) call
+
+
+def test_windows_account_tools_dispatch():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.remediate_account_windows.return_value = {"tool": "remediate_account_windows"}
+    ex.revoke_escalation_windows.return_value = {"tool": "revoke_escalation_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "remediate_account_windows", "arguments": {"user": "foothold"}}})
+    ex.remediate_account_windows.assert_called_once_with("foothold")
+    blue.process_tool_call({"function": {"name": "revoke_escalation_windows", "arguments": {"user": "foothold"}}})
+    ex.revoke_escalation_windows.assert_called_once_with("foothold")
