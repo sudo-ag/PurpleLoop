@@ -366,6 +366,9 @@ class ToolExecutor:
         self.analysis_since_epoch: Optional[int] = None
         # Names at uid 0 when the window opened; only accounts added after count.
         self._uid0_baseline: Optional[set] = None
+        # Windows autostart snapshot (Run keys/services/tasks) at window open;
+        # entries present live but absent here are planted persistence.
+        self._win_persist_baseline: Optional[set] = None
         # Cached per-episode escalation-paths posture scan (host-wide find is
         # expensive; scan once, reuse within the episode). Cleared each window.
         self._escalation_cache: Optional[Dict[str, Any]] = None
@@ -796,6 +799,7 @@ class ToolExecutor:
             self.analysis_since = None  # syslog line-window unused on Windows
             self._escalation_cache = None
             self._uid0_baseline = None
+            self._win_persist_baseline = self._capture_baseline(self._list_win_persistence)
             return
         # Read the target's wall clock as syslog-style text ("2026 Oct  8 22:22:16")
         # and convert it with the SAME parser used for log lines. A raw `date +%s`
@@ -1350,6 +1354,70 @@ class ToolExecutor:
             "ps aux 2>/dev/null || ps -ef 2>/dev/null || true"
         )
         return self._parse_ps(raw)
+
+    def _list_win_persistence(self) -> Optional[set]:
+        """Enumerate Windows autostart persistence as a set of stable strings:
+        Run/RunOnce registry values, auto-start services, and scheduled tasks.
+        Each category is fault-tolerant (a missing cmdlet on older Windows drops
+        only that category, never the whole read); None only on a transport error,
+        which the baseline/diff treats as 'no trustworthy snapshot'.
+
+        shortcut: HKCU covers only the WinRM account's hive, so persistence in
+        another user's HKCU is missed; add per-user hive enumeration if needed."""
+        script = (
+            "$items=@(); "
+            "foreach ($h in 'HKLM','HKCU') { foreach ($k in 'Run','RunOnce') { "
+            "$p=\"${h}:\\Software\\Microsoft\\Windows\\CurrentVersion\\$k\"; "
+            "try { if (Test-Path $p) { (Get-Item $p).Property | ForEach-Object { "
+            "$v=(Get-ItemProperty $p -Name $_).$_; "
+            "$items += \"run|$h\\$k|$_|$v\" } } } catch {} } } "
+            "try { Get-CimInstance Win32_Service | "
+            "Where-Object { $_.StartMode -eq 'Auto' } | ForEach-Object { "
+            "$items += \"service|$($_.Name)|$($_.PathName)\" } } catch {} "
+            "try { schtasks /query /fo csv /nh 2>$null | ForEach-Object { "
+            "$n=($_ -split '\",\"')[0].Trim('\"'); "
+            "if ($n) { $items += \"task|$n\" } } } catch {} "
+            "$items | ConvertTo-Json -Compress"
+        )
+        raw = self._ps(script).strip()
+        if not raw or raw.startswith("WINRM_ERR"):
+            return None
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(data, str):  # ConvertTo-Json emits a bare string for one item
+            data = [data]
+        return {str(x) for x in data}
+
+    def investigate_persistence_windows(self) -> Dict[str, Any]:
+        """Windows counterpart of investigate_persistence: diffs autostart entries
+        (Run keys, services, scheduled tasks) against the baseline captured at
+        mark_analysis_window(). An entry present live but absent from the baseline
+        is a planted backdoor — the same baseline-diff doctrine as the Linux
+        authorized_keys sensor, which also survives a password-only remediation."""
+        out: Dict[str, Any] = {
+            "tool": "investigate_persistence_windows",
+            "new_entries": [],
+            "flag_access_detected": False,
+            "assessment": "CLEAN",
+        }
+        live = self._list_win_persistence()
+        ok, new_entries = self._diff_baseline(self._win_persist_baseline, live)
+        if not ok:
+            out["baseline_unavailable"] = True
+            out["summary"] = ("No persistence baseline — cannot diff. NOT a clean "
+                              "result; the autostart snapshot was unreadable.")
+            out["assessment"] = "UNAVAILABLE"
+            return out
+        if new_entries:
+            out["new_entries"] = new_entries
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
+            out["summary"] = f"{len(new_entries)} new autostart entr(ies) since baseline."
+        else:
+            out["summary"] = "No new autostart persistence since baseline."
+        return out
 
     def investigate_logins_windows(self) -> Dict[str, Any]:
         """Windows counterpart of investigate_logs(auth): Security Event Log 4624

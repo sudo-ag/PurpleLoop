@@ -189,3 +189,12 @@ def test_windows_logins_sensor_runs_on_windows():
     blue = Agent(role="blue", executor=ex, model="m")
     blue.process_tool_call({"function": {"name": "investigate_logins_windows", "arguments": {}}})
     ex.investigate_logins_windows.assert_called_once()
+
+
+def test_windows_persistence_sensor_runs_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.investigate_persistence_windows.return_value = {"tool": "investigate_persistence_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_persistence_windows", "arguments": {}}})
+    ex.investigate_persistence_windows.assert_called_once()

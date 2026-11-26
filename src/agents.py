@@ -27,6 +27,7 @@ LINUX_ONLY_SENSORS = frozenset({
 WINDOWS_ONLY_SENSORS = frozenset({
     "investigate_processes_windows",
     "investigate_logins_windows",
+    "investigate_persistence_windows",
 })
 
 
@@ -697,6 +698,18 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_persistence_windows',
+                        'description': 'WINDOWS-ONLY persistence sensor — use this instead of investigate_persistence when the target OS is windows. Diffs autostart entries (Run keys, auto-start services, scheduled tasks) against the engagement baseline; a new entry is a planted backdoor.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_network',
                         'description': 'Examine network connections and listening ports on the target system for suspicious activity. Returns structured data with connection details and suspicion flags.',
                         'parameters': {
@@ -1289,6 +1302,13 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "investigate_logins_windows", "status": "error", "error": str(e)})
+
+        elif tool_call['function']['name'] == 'investigate_persistence_windows':
+            try:
+                result = self.executor.investigate_persistence_windows()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_persistence_windows", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'investigate_network':
             try:

@@ -913,6 +913,37 @@ def test_mark_analysis_window_windows_reads_epoch_via_ps():
     ex = _winrm_executor()
     with patch.object(ex, "_ps", return_value="1795646486\n") as ps:
         ex.mark_analysis_window()
-    ps.assert_called_once()
+    assert ps.called  # clock read + persistence-baseline capture both use _ps
     assert ex.analysis_since_epoch == 1795646486
     assert ex.analysis_since is None  # syslog line-window unused on Windows
+
+
+# --- Windows persistence sensor (autostart baseline diff) ----------------------
+
+def test_persistence_windows_breach_on_new_entry():
+    ex = _winrm_executor()
+    ex._win_persist_baseline = {"run|HKLM\\Run|OneDrive|onedrive.exe"}
+    live = ex._win_persist_baseline | {"run|HKLM\\Run|evil|C:\\t\\b.exe"}
+    with patch.object(ex, "_list_win_persistence", return_value=live):
+        r = ex.investigate_persistence_windows()
+    assert r["assessment"] == "BREACH"
+    assert r["new_entries"] == ["run|HKLM\\Run|evil|C:\\t\\b.exe"]
+    assert r["flag_access_detected"] is True
+
+
+def test_persistence_windows_clean_when_unchanged():
+    ex = _winrm_executor()
+    ex._win_persist_baseline = {"service|foo|C:\\foo.exe"}
+    with patch.object(ex, "_list_win_persistence", return_value=set(ex._win_persist_baseline)):
+        r = ex.investigate_persistence_windows()
+    assert r["assessment"] == "CLEAN"
+    assert r["new_entries"] == []
+
+
+def test_persistence_windows_unavailable_without_baseline():
+    ex = _winrm_executor()
+    ex._win_persist_baseline = {"service|foo|x"}
+    with patch.object(ex, "_list_win_persistence", return_value=None):  # read failed
+        r = ex.investigate_persistence_windows()
+    assert r["assessment"] == "UNAVAILABLE"
+    assert r["baseline_unavailable"] is True
