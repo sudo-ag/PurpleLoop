@@ -226,3 +226,20 @@ def test_windows_remove_persistence_dispatches():
     blue = Agent(role="blue", executor=ex, model="m")
     blue.process_tool_call({"function": {"name": "remove_persistence_windows", "arguments": {}}})
     ex.remove_persistence_windows.assert_called_once()
+
+
+def test_contain_windows_routes_and_observe_holds():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.contain_attacker_windows.return_value = {"tool": "contain_attacker_windows", "contained": True}
+    blue = Agent(role="blue", executor=ex, model="m")
+    out = blue.process_tool_call({"function": {"name": "contain_attacker_windows",
+                                               "arguments": {"ip": "10.6.6.6"}}})
+    ex.contain_attacker_windows.assert_called_once_with("10.6.6.6")
+    assert "contain_attacker_windows" in out
+    # observe mode holds the network block, same as the Linux tool
+    blue_obs = Agent(role="blue", executor=ex, model="m", observe=True)
+    out2 = blue_obs.process_tool_call({"function": {"name": "contain_attacker_windows",
+                                                    "arguments": {"ip": "10.6.6.6"}}})
+    assert "observed" in out2  # held, not executed
+    ex.contain_attacker_windows.assert_called_once()  # still only the first (non-observe) call

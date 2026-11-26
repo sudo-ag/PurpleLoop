@@ -388,6 +388,7 @@ class ToolExecutor:
         # Attacker IPs blue has firewalled on the target this run; removed at
         # disconnect so the box isn't left blocking traffic across runs.
         self._contained_ips: List[str] = []
+        self._win_blocked_ips: List[str] = []  # Windows firewall blocks to flush
         # Accounts blue has locked + killed this run; unlocked at disconnect so
         # the box isn't left with disabled accounts across runs.
         self._remediated_users: List[str] = []
@@ -527,6 +528,7 @@ class ToolExecutor:
         """Tears down the ControlMaster and cleans up the socket."""
         # Remove any firewall / logging rules blue added, before the master goes.
         self._disable_file_audit()  # winrm: runs via the jump channel, still live
+        self._flush_win_blocked()
         self._flush_contained()
         self._restore_remediated()
         self._restore_revoked()
@@ -2040,6 +2042,62 @@ class ToolExecutor:
         else:
             findings["summary"] = f"Failed to contain {ip}: {out.strip()[:160]}"
         return findings
+
+    def contain_attacker_windows(self, ip: str) -> Dict[str, Any]:
+        """Windows counterpart of contain_attacker: block an attacker source IP at
+        the Windows firewall with an inbound Block rule (reversible, removed at
+        disconnect). Refuses blue's own control IP (the jump on WinRM) so the
+        defender isn't locked out.
+
+        shortcut: New-NetFirewallRule is Win8/2012+; use `netsh advfirewall` for an
+        older target."""
+        ip = (ip or "").strip()
+        findings: Dict[str, Any] = {
+            "tool": "contain_attacker_windows", "target_ip": ip,
+            "contained": False, "assessment": "INFO", "summary": "",
+        }
+        if self.transport != "winrm":
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = "Not a Windows target; nothing contained."
+            return findings
+        if not _is_ipv4(ip):
+            findings["summary"] = f"'{ip}' is not a valid IPv4 address; nothing contained."
+            return findings
+        control_ip = self.control_source_ip or self.jump_host
+        if ip == control_ip:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = (f"Refused: {ip} is blue's own control channel — "
+                                   "blocking it would cut off the defender.")
+            return findings
+        name = f"PL_BLOCK_{ip}"
+        out = self._ps(
+            f"try {{ if (-not (Get-NetFirewallRule -DisplayName '{name}' "
+            f"-EA SilentlyContinue)) {{ New-NetFirewallRule -DisplayName '{name}' "
+            f"-Direction Inbound -Action Block -RemoteAddress '{ip}' -EA Stop | "
+            "Out-Null }; 'PL_BLOCKED' } catch { $_.Exception.Message }"
+        )
+        if "PL_BLOCKED" in out:
+            if ip not in self._win_blocked_ips:
+                self._win_blocked_ips.append(ip)
+            findings["contained"] = True
+            findings["assessment"] = "CONTAINED"
+            findings["summary"] = (f"Attacker {ip} contained: inbound traffic blocked "
+                                   "at the Windows firewall.")
+        else:
+            findings["summary"] = f"Failed to contain {ip}: {out.strip()[:160]}"
+        return findings
+
+    def _flush_win_blocked(self) -> None:
+        """Remove Windows firewall rules this executor added (best-effort)."""
+        if not self._win_blocked_ips:
+            return
+        for ip in list(self._win_blocked_ips):
+            try:
+                self._ps(f"Remove-NetFirewallRule -DisplayName 'PL_BLOCK_{ip}' "
+                         "-EA SilentlyContinue")
+            except Exception:
+                pass
+        self._win_blocked_ips.clear()
 
     def _flush_contained(self) -> None:
         """Remove firewall rules this executor added (best-effort)."""

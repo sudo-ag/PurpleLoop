@@ -1094,3 +1094,25 @@ def test_remove_win_persist_entry_dispatches_by_kind():
         assert "sc.exe delete" in ps.call_args.args[0]
         assert ex._remove_win_persist_entry("task|EvilTask")[0] is True
         assert "schtasks /delete" in ps.call_args.args[0]
+
+
+# --- Windows containment (contain_attacker_windows) ----------------------------
+
+def test_contain_attacker_windows_refusals():
+    assert _executor().contain_attacker_windows("10.6.6.6")["assessment"] == "REFUSED"  # ssh
+    ex = _winrm_executor()  # jump_host 192.168.64.11 is control
+    assert ex.contain_attacker_windows("192.168.64.11")["assessment"] == "REFUSED"
+    assert ex.contain_attacker_windows("not-an-ip")["contained"] is False
+
+
+def test_contain_attacker_windows_blocks_and_tracks():
+    ex = _winrm_executor()
+    with patch.object(ex, "_ps", return_value="PL_BLOCKED") as ps:
+        r = ex.contain_attacker_windows("10.6.6.6")
+    assert r["assessment"] == "CONTAINED" and r["contained"] is True
+    assert ex._win_blocked_ips == ["10.6.6.6"]
+    assert "New-NetFirewallRule" in ps.call_args.args[0]
+    with patch.object(ex, "_ps", return_value="") as ps2:
+        ex._flush_win_blocked()
+    assert "Remove-NetFirewallRule" in ps2.call_args.args[0]
+    assert ex._win_blocked_ips == []

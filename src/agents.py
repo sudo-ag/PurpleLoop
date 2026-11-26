@@ -884,6 +884,23 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'contain_attacker_windows',
+                        'description': 'WINDOWS-ONLY containment — use this instead of contain_attacker when the target OS is windows. Blocks an attacker source IP at the Windows firewall (reversible). Takes an ip argument. Refuses blue\'s own control IP.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'ip': {
+                                    'type': 'string',
+                                    'description': 'The attacker source IP to block, e.g. "10.6.6.6".',
+                                },
+                            },
+                            'required': ['ip'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'remediate_account',
                         'description': "Neutralize a compromised account on the target: lock it and kill its sessions (reversible). Call this once you identify the account an attacker logged into — a successful authentication by a user that is NOT your own control session. This cuts off the attacker's foothold and any in-progress privilege escalation before they reach root. Refuses privileged accounts (vagrant/root). Takes a user argument.",
                         'parameters': {
@@ -1458,6 +1475,10 @@ class Agent:
         elif tool_call['function']['name'] == 'contain_attacker':
             return self._dispatch_contain_attacker(tool_call['function'].get('arguments', {}))
 
+        elif tool_call['function']['name'] == 'contain_attacker_windows':
+            return self._dispatch_contain_attacker(
+                tool_call['function'].get('arguments', {}), windows=True)
+
         elif tool_call['function']['name'] == 'remediate_account':
             # Unlike contain_attacker, remediation is LIVE even in observe mode:
             # observe holds the *network* block so red still earns a foothold and
@@ -1553,7 +1574,7 @@ class Agent:
         except Exception as e:
             return json.dumps({"tool": "update_hypothesis", "status": "error", "error": str(e)})
 
-    def _dispatch_contain_attacker(self, args: Dict[str, Any]) -> str:
+    def _dispatch_contain_attacker(self, args: Dict[str, Any], windows: bool = False) -> str:
         ip = args.get('ip', "")
         # Thin-evidence floor: block a containment whose cited leads (the current
         # hypothesis's) all come from a single sensor. Multi-sensor sufficiency stays
@@ -1573,10 +1594,12 @@ class Agent:
                                "cited_leads": cited,
                                "note": "observe mode: containment held for training"})
         try:
-            result = self.executor.contain_attacker(ip)
+            result = (self.executor.contain_attacker_windows(ip) if windows
+                      else self.executor.contain_attacker(ip))
             return json.dumps(result)
         except Exception as e:
-            return json.dumps({"tool": "contain_attacker", "status": "error", "error": str(e), "target_ip": ip})
+            tool = "contain_attacker_windows" if windows else "contain_attacker"
+            return json.dumps({"tool": tool, "status": "error", "error": str(e), "target_ip": ip})
 
     def summarize_experience(self, history: List[Dict[str, Any]], outcome: Optional[str] = None) -> Optional[str]:
         """
