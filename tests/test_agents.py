@@ -198,3 +198,31 @@ def test_windows_persistence_sensor_runs_on_windows():
     blue = Agent(role="blue", executor=ex, model="m")
     blue.process_tool_call({"function": {"name": "investigate_persistence_windows", "arguments": {}}})
     ex.investigate_persistence_windows.assert_called_once()
+
+
+def test_windows_network_sensor_runs_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.investigate_network_windows.return_value = {"tool": "investigate_network_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_network_windows", "arguments": {}}})
+    ex.investigate_network_windows.assert_called_once()
+
+
+def test_windows_file_access_sensor_runs_on_windows():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.investigate_file_access_windows.return_value = {"tool": "investigate_file_access_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "investigate_file_access_windows",
+                                         "arguments": {"file_path": "C:\\x.txt"}}})
+    ex.investigate_file_access_windows.assert_called_once_with("C:\\x.txt")
+
+
+def test_windows_remove_persistence_dispatches():
+    ex = MagicMock()
+    ex.detected_os = "windows"
+    ex.remove_persistence_windows.return_value = {"tool": "remove_persistence_windows"}
+    blue = Agent(role="blue", executor=ex, model="m")
+    blue.process_tool_call({"function": {"name": "remove_persistence_windows", "arguments": {}}})
+    ex.remove_persistence_windows.assert_called_once()

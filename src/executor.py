@@ -401,6 +401,11 @@ class ToolExecutor:
         # Whether blue has armed the inbound-connection LOG rule (for network
         # visibility into an attacker's recon); removed at disconnect.
         self._conn_logging: bool = False
+        # Windows object-access auditing armed on the objective file (SACL +
+        # 'Audit Object Access' policy); disarmed at disconnect. Windows analogue
+        # of the Linux PLWATCH connection-logging arming.
+        self._win_audit_path: Optional[str] = None
+        self._win_audit_policy_changed: bool = False
         # Safety net: tear down the master if the orchestrator never calls
         # disconnect() (crash, Ctrl-C), so we don't leak backgrounded ssh procs.
         atexit.register(self.disconnect)
@@ -521,6 +526,7 @@ class ToolExecutor:
     def disconnect(self):
         """Tears down the ControlMaster and cleans up the socket."""
         # Remove any firewall / logging rules blue added, before the master goes.
+        self._disable_file_audit()  # winrm: runs via the jump channel, still live
         self._flush_contained()
         self._restore_remediated()
         self._restore_revoked()
@@ -1390,6 +1396,193 @@ class ToolExecutor:
             data = [data]
         return {str(x) for x in data}
 
+    def investigate_file_access_windows(
+        self, file_path: str = r"C:\Users\Administrator\Desktop\flag.txt"
+    ) -> Dict[str, Any]:
+        """Windows counterpart of investigate_file_access. Always reports posture
+        (exists / owner / ACL). ACCESS is confirmed only via Event 4663, which
+        needs object-access auditing ARMED (SACL + 'Audit Object Access') — off by
+        default, and NTFS last-access-time is disabled by default too. When
+        auditing is off the sensor reports it can't confirm access; it never
+        reports CLEAN access on an unaudited file.
+
+        shortcut: access detection depends on auditing armed at engagement start
+        (no Windows equivalent of the Linux PLWATCH arming exists yet); until then
+        this is posture-only on a default box."""
+        window = ""
+        if self.analysis_since_epoch is not None:
+            window = (f"$f.StartTime=[DateTimeOffset]::FromUnixTimeSeconds("
+                      f"{int(self.analysis_since_epoch)}).LocalDateTime; ")
+        p = file_path.replace("'", "''")  # PS single-quote escape
+        script = (
+            f"$path='{p}'; $o=[ordered]@{{path=$path;exists=$false;owner=$null;"
+            "acl=@();last_write=$null;last_access=$null;auditing=$null;access_events=@()}; "
+            "if (Test-Path -LiteralPath $path) { $o.exists=$true; "
+            "$i=Get-Item -LiteralPath $path -Force; "
+            "$o.last_write=$i.LastWriteTime.ToString('o'); "
+            "$o.last_access=$i.LastAccessTime.ToString('o'); "
+            "try { $a=Get-Acl -LiteralPath $path; $o.owner=$a.Owner; "
+            "$o.acl=@($a.Access | ForEach-Object { "
+            "\"$($_.IdentityReference):$($_.FileSystemRights)\" }) } catch {} } "
+            "try { $ap=auditpol /get /subcategory:'File System' /r 2>$null | "
+            "ConvertFrom-Csv; $o.auditing=($ap | Select-Object -Last 1)."
+            "'Inclusion Setting' } catch {} "
+            "$f=@{LogName='Security';Id=4663}; " + window +
+            "try { $ev=Get-WinEvent -FilterHashtable $f -MaxEvents 200 -ErrorAction Stop; "
+            "$o.access_events=@($ev | ForEach-Object { $x=[xml]$_.ToXml(); $d=@{}; "
+            "$x.Event.EventData.Data | ForEach-Object { $d[$_.Name]=$_.'#text' }; "
+            "if ($d['ObjectName'] -eq $path) { "
+            "\"$($d['SubjectUserName'])|$($_.TimeCreated.ToString('o'))\" } } | "
+            "Where-Object { $_ }) } catch { if ($_.Exception.Message -notmatch "
+            "'No events were found') { $o.gwerr=$_.Exception.Message } } "
+            "$o | ConvertTo-Json -Compress -Depth 4"
+        )
+        return self._parse_file_access_windows(self._ps(script), file_path)
+
+    def _parse_file_access_windows(self, raw: str, file_path: str) -> Dict[str, Any]:
+        text = (raw or "").strip()
+        if not text or text.startswith("WINRM_ERR"):
+            return {
+                "tool": "investigate_file_access_windows", "file_path": file_path,
+                "error": text or "no data", "flag_access_detected": False,
+                "summary": "File-access probe unreadable — NOT a clean result.",
+                "assessment": "UNAVAILABLE",
+            }
+        try:
+            o = json.loads(text)
+        except (ValueError, TypeError):
+            o = {}
+        if not o.get("exists"):
+            return {
+                "tool": "investigate_file_access_windows", "file_path": file_path,
+                "file_exists": False, "flag_access_detected": False,
+                "summary": f"{file_path} not found.", "assessment": "CLEAN",
+            }
+
+        # Access events, excluding blue's own control account and machine/SYSTEM.
+        self_names = {(self.user or "").lower(), "system"}
+        foreign = []
+        for ev in (o.get("access_events") or []):
+            subj = str(ev).split("|", 1)[0]
+            if subj.lower() in self_names or subj.endswith("$"):
+                continue
+            foreign.append(ev)
+
+        auditing = o.get("auditing")
+        audit_armed = bool(auditing) and "No Auditing" not in str(auditing)
+        out = {
+            "tool": "investigate_file_access_windows",
+            "file_path": file_path,
+            "file_exists": True,
+            "owner": o.get("owner"),
+            "acl": o.get("acl") or [],
+            "last_write": o.get("last_write"),
+            "last_access": o.get("last_access"),
+            "access_auditing": "armed" if audit_armed else "off",
+            "access_events": foreign,
+            "flag_access_detected": False,
+        }
+        if foreign:
+            out["flag_access_detected"] = True
+            out["assessment"] = "BREACH"
+            out["summary"] = (f"Object-access (4663) by non-control account(s) on "
+                              f"{file_path}: {', '.join(foreign)}.")
+        elif audit_armed:
+            out["assessment"] = "CLEAN"
+            out["summary"] = f"Auditing armed; no foreign access to {file_path} in window."
+        else:
+            out["assessment"] = "UNAVAILABLE"
+            out["summary"] = (f"{file_path} exists (owner {o.get('owner')}), but "
+                              "object-access auditing is OFF — cannot confirm access. "
+                              "NOT a clean result.")
+        return out
+
+    def investigate_network_windows(self) -> Dict[str, Any]:
+        """Windows counterpart of investigate_network / investigate_resident_foothold:
+        an ESTABLISHED TCP session to a foreign (non-control, non-local) peer is an
+        active attacker foothold, the same discriminator the Linux resident-foothold
+        sensor uses. Carries OwningProcess for correlation with the process sensor.
+
+        shortcut: Get-NetTCPConnection is Win8/2012+; add a `netstat -ano` fallback
+        if an older Windows target ever needs this sensor."""
+        raw = self._ps(
+            "Get-NetTCPConnection | Select-Object LocalAddress,LocalPort,"
+            "RemoteAddress,RemotePort,"
+            # State is an enum that ConvertTo-Json renders as an int (2=Listen,
+            # 5=Established); coerce to its name so parsing is version-proof.
+            "@{N='State';E={[string]$_.State}},OwningProcess | ConvertTo-Json -Compress"
+        )
+        return self._parse_network_windows(raw)
+
+    def _parse_network_windows(self, raw: str) -> Dict[str, Any]:
+        """Parse Get-NetTCPConnection JSON: list listeners and attribute foreign
+        ESTABLISHED sessions. A read error is a SENSOR GAP (UNAVAILABLE), not a
+        clean box."""
+        text = (raw or "").strip()
+        if not text or text.startswith("WINRM_ERR"):
+            return {
+                "tool": "investigate_network_windows",
+                "error": text or "No TCP connection data",
+                "listeners": [], "foreign_sessions": [], "foothold_ips": [],
+                "flag_access_detected": False,
+                "summary": "TCP table unreadable — NOT a clean result.",
+                "assessment": "UNAVAILABLE",
+                "recommendation": "Network visibility lost; check WinRM/PowerShell access.",
+            }
+        try:
+            records = json.loads(text)
+        except (ValueError, TypeError):
+            records = []
+        if isinstance(records, dict):
+            records = [records]
+
+        # On WinRM the jump is blue's control peer (no auth.log-style probe runs).
+        control_ip = self.jump_host if self.transport == "winrm" else None
+
+        listeners, foreign_sessions = [], []
+        foothold_ips: set = set()
+        for rec in records:
+            state = str(rec.get("State") or "")
+            if state == "Listen":
+                listeners.append({
+                    "port": rec.get("LocalPort"), "pid": rec.get("OwningProcess"),
+                    "address": rec.get("LocalAddress"),
+                })
+            elif state == "Established":
+                rip = str(rec.get("RemoteAddress") or "")
+                # Foothold = a private/LAN peer (attacker pivots from the LAN),
+                # excluding blue's control channel and loopback/link-local. Public
+                # egress (OS telemetry, updates, CDNs) is NOT flagged — same
+                # doctrine and same public-C2 blind spot as the Linux sensor.
+                if (self._is_local_or_control(rip) or rip == control_ip
+                        or not self._is_foothold_peer(rip)):
+                    continue
+                foothold_ips.add(rip)
+                foreign_sessions.append({
+                    "remote": rip, "remote_port": rec.get("RemotePort"),
+                    "local_port": rec.get("LocalPort"), "pid": rec.get("OwningProcess"),
+                })
+
+        assessment = "SUSPICIOUS" if foothold_ips else "CLEAN"
+        summary = (f"TCP: {len(listeners)} listeners, "
+                   f"{len(foreign_sessions)} foreign established session(s).")
+        if foothold_ips:
+            summary += f" Foothold peer(s): {', '.join(sorted(foothold_ips))}."
+        return {
+            "tool": "investigate_network_windows",
+            "listeners": listeners,
+            "foreign_sessions": foreign_sessions,
+            "foothold_ips": sorted(foothold_ips),
+            "flag_access_detected": False,
+            "summary": summary,
+            "assessment": assessment,
+            "recommendation": (
+                "A foreign established session is an active foothold. Correlate the "
+                "OwningProcess with the process sensor and consider eviction."
+                if foothold_ips else "No foreign sessions; monitor listeners."
+            ),
+        }
+
     def investigate_persistence_windows(self) -> Dict[str, Any]:
         """Windows counterpart of investigate_persistence: diffs autostart entries
         (Run keys, services, scheduled tasks) against the baseline captured at
@@ -2115,6 +2308,76 @@ class ToolExecutor:
         )
         return findings
 
+    def _remove_win_persist_entry(self, entry: str) -> Tuple[bool, str]:
+        """Remove one autostart entry (as formatted by _list_win_persistence).
+        Returns (removed, detail). Needs admin (the WinRM session is)."""
+        parts = entry.split("|")
+        kind = parts[0]
+        if kind == "run" and len(parts) >= 3:
+            hive, key = parts[1].split("\\", 1)
+            name = parts[2].replace("'", "''")
+            path = f"{hive}:\\Software\\Microsoft\\Windows\\CurrentVersion\\{key}"
+            out = self._ps(f"try {{ Remove-ItemProperty -Path '{path}' -Name '{name}' "
+                           "-Force -EA Stop; 'PL_OK' } catch { $_.Exception.Message }")
+        elif kind == "service" and len(parts) >= 2:
+            name = parts[1].replace("'", "''")
+            out = self._ps(f"$n='{name}'; sc.exe stop $n | Out-Null; "
+                           "$r = sc.exe delete $n; "
+                           "if ($LASTEXITCODE -eq 0) { 'PL_OK' } else { $r }")
+        elif kind == "task" and len(parts) >= 2:
+            name = parts[1].replace("'", "''")
+            out = self._ps(f"$r = schtasks /delete /tn '{name}' /f 2>&1; "
+                           "if ($LASTEXITCODE -eq 0) { 'PL_OK' } else { $r }")
+        else:
+            return (False, f"unrecognized entry: {entry[:60]}")
+        return ("PL_OK" in out, out.strip()[:160])
+
+    def remove_persistence_windows(self) -> Dict[str, Any]:
+        """Windows counterpart of remove_persistence: strip every autostart entry
+        (Run key / service / scheduled task) present now but absent from the
+        baseline captured at mark_analysis_window() — i.e. exactly what
+        investigate_persistence_windows flags as planted. Surgical (baseline-diff,
+        never a blanket wipe); refuses if no trustworthy baseline exists.
+
+        shortcut: removal is permanent (no disconnect-time restore, like the Linux
+        key-strip); on a --no-reset box a legit entry that appeared after the
+        baseline (e.g. a mid-episode Windows Update) would also be removed. Safe on
+        the isolated dojo where nothing legitimate changes mid-episode."""
+        findings: Dict[str, Any] = {
+            "tool": "remove_persistence_windows", "removed_entries": [],
+            "failed": [], "assessment": "INFO", "summary": "",
+        }
+        if self.transport != "winrm":
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = "Not a Windows target; nothing removed."
+            return findings
+        if self._win_persist_baseline is None:
+            findings["assessment"] = "REFUSED"
+            findings["summary"] = "No persistence baseline; refusing to modify autostart."
+            return findings
+        live = self._list_win_persistence()
+        ok, new_entries = self._diff_baseline(self._win_persist_baseline, live)
+        if not ok:
+            findings["assessment"] = "UNAVAILABLE"
+            findings["summary"] = "Autostart snapshot unreadable; nothing removed."
+            return findings
+        if not new_entries:
+            findings["assessment"] = "CLEAN"
+            findings["summary"] = "No post-baseline autostart entries to remove."
+            return findings
+        for entry in new_entries:
+            removed, detail = self._remove_win_persist_entry(entry)
+            if removed:
+                findings["removed_entries"].append(entry)
+            else:
+                findings["failed"].append({"entry": entry, "detail": detail})
+        findings["assessment"] = "REMOVED" if findings["removed_entries"] else "INFO"
+        findings["summary"] = (
+            f"Removed {len(findings['removed_entries'])} planted autostart "
+            f"entr(ies); {len(findings['failed'])} failed."
+        )
+        return findings
+
     def _restore_revoked(self) -> None:
         """Re-add stripped group memberships (best-effort), so episodes start clean."""
         if not self._revoked_privs or not self._master_alive():
@@ -2167,6 +2430,63 @@ class ToolExecutor:
             except Exception:
                 pass
         self._conn_logging = False
+
+    def enable_file_audit(self, file_path: str) -> bool:
+        """Windows analogue of enable_connection_logging: arm object-access
+        auditing on the objective file so a read by the attacker emits Event 4663,
+        which investigate_file_access_windows turns into a BREACH. No-op unless
+        this is a WinRM target. Sets a SACL (audit Everyone's reads) and, if the
+        'Audit Object Access' policy is off, enables it (remembered so disarm only
+        reverts what we changed). Reversible; removed at disconnect."""
+        if self.transport != "winrm":
+            return False
+        p = file_path.replace("'", "''")
+        script = (
+            f"$path='{p}'; if (-not (Test-Path -LiteralPath $path)) {{ 'PL_NOFILE'; exit }} "
+            # Enable the Success audit only if it is currently off, and say so, so
+            # teardown reverts exactly what arming changed.
+            "$cur=(auditpol /get /subcategory:'File System' /r 2>$null | "
+            "ConvertFrom-Csv | Select-Object -Last 1).'Inclusion Setting'; "
+            "if ($cur -notmatch 'Success') { "
+            "auditpol /set /subcategory:'File System' /success:enable | Out-Null; "
+            "'PL_POLICY_SET' } else { 'PL_POLICY_KEPT' }; "
+            # Add a Success audit rule for file reads by anyone.
+            "$acl=Get-Acl -LiteralPath $path -Audit; "
+            "$rule=New-Object System.Security.AccessControl.FileSystemAuditRule("
+            "'Everyone','ReadData','Success'); $acl.AddAuditRule($rule); "
+            "Set-Acl -LiteralPath $path -AclObject $acl; 'PL_SACL_SET'"
+        )
+        out = self._ps(script)
+        if "PL_NOFILE" in out or "PL_SACL_SET" not in out:
+            logger.warning("Could not arm file auditing on %s: %s",
+                           file_path, out.strip()[:120])
+            return False
+        self._win_audit_path = file_path
+        self._win_audit_policy_changed = "PL_POLICY_SET" in out
+        logger.info("File auditing armed on %s (%s).", file_path,
+                    "policy enabled" if self._win_audit_policy_changed else "policy kept")
+        return True
+
+    def _disable_file_audit(self) -> None:
+        if not self._win_audit_path:
+            return
+        p = self._win_audit_path.replace("'", "''")
+        revert_policy = ("auditpol /set /subcategory:'File System' "
+                         "/success:disable | Out-Null; " if self._win_audit_policy_changed else "")
+        script = (
+            f"$path='{p}'; try {{ if (Test-Path -LiteralPath $path) {{ "
+            "$acl=Get-Acl -LiteralPath $path -Audit; "
+            "$acl.GetAuditRules($true,$false,"
+            "[System.Security.Principal.NTAccount]) | ForEach-Object { "
+            "$acl.RemoveAuditRule($_) | Out-Null }; "
+            "Set-Acl -LiteralPath $path -AclObject $acl } } catch {} " + revert_policy
+        )
+        try:
+            self._ps(script)
+        except Exception:
+            pass
+        self._win_audit_path = None
+        self._win_audit_policy_changed = False
 
     # ------------------------------------------------------------------
     # Parsers — turn raw command output into structured signals

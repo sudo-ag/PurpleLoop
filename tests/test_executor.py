@@ -947,3 +947,150 @@ def test_persistence_windows_unavailable_without_baseline():
         r = ex.investigate_persistence_windows()
     assert r["assessment"] == "UNAVAILABLE"
     assert r["baseline_unavailable"] is True
+
+
+# --- Windows network sensor (Get-NetTCPConnection) -----------------------------
+
+def test_parse_network_windows_flags_foreign_session():
+    ex = _winrm_executor()
+    raw = json.dumps([
+        {"LocalAddress": "0.0.0.0", "LocalPort": 445, "RemoteAddress": "0.0.0.0",
+         "RemotePort": 0, "State": "Listen", "OwningProcess": 4},
+        {"LocalAddress": "192.168.64.17", "LocalPort": 5985, "RemoteAddress": "192.168.64.11",
+         "RemotePort": 51000, "State": "Established", "OwningProcess": 900},  # control (jump)
+        {"LocalAddress": "192.168.64.17", "LocalPort": 49200, "RemoteAddress": "10.6.6.6",
+         "RemotePort": 4444, "State": "Established", "OwningProcess": 1337},  # foothold
+    ])
+    r = ex._parse_network_windows(raw)
+    assert r["assessment"] == "SUSPICIOUS"
+    assert r["foothold_ips"] == ["10.6.6.6"]          # jump excluded as control
+    assert len(r["listeners"]) == 1
+    assert r["foreign_sessions"][0]["pid"] == 1337
+
+
+def test_parse_network_windows_unavailable_and_clean():
+    ex = _winrm_executor()
+    assert ex._parse_network_windows("WINRM_ERR(-1): x")["assessment"] == "UNAVAILABLE"
+    clean = ex._parse_network_windows(json.dumps(
+        {"LocalAddress": "0.0.0.0", "LocalPort": 135, "RemoteAddress": "0.0.0.0",
+         "RemotePort": 0, "State": "Listen", "OwningProcess": 544}))
+    assert clean["assessment"] == "CLEAN"
+    assert clean["foothold_ips"] == []
+
+
+# --- Windows file-access sensor (NTFS posture + Event 4663) ---------------------
+
+def _fa(exists=True, owner="BUILTIN\\Administrators", auditing="No Auditing", events=None):
+    return json.dumps({"path": "C:\\flag.txt", "exists": exists, "owner": owner,
+                       "acl": ["Everyone:Read"], "last_write": "t", "last_access": "t",
+                       "auditing": auditing, "access_events": events or []})
+
+
+def test_file_access_windows_breach_on_foreign_4663():
+    ex = _winrm_executor()  # self.user == "vagrant"
+    r = ex._parse_file_access_windows(
+        _fa(auditing="Success", events=["attacker|2026-11-25T10:00:00"]), "C:\\flag.txt")
+    assert r["assessment"] == "BREACH"
+    assert r["flag_access_detected"] is True
+
+
+def test_file_access_windows_excludes_self_and_system():
+    ex = _winrm_executor()
+    r = ex._parse_file_access_windows(
+        _fa(auditing="Success", events=["vagrant|t", "SYSTEM|t", "DESKTOP$|t"]), "C:\\flag.txt")
+    assert r["assessment"] == "CLEAN"        # only self/system/machine — no foreign access
+    assert r["access_events"] == []
+
+
+def test_file_access_windows_unavailable_when_auditing_off():
+    ex = _winrm_executor()
+    r = ex._parse_file_access_windows(_fa(auditing="No Auditing"), "C:\\flag.txt")
+    assert r["assessment"] == "UNAVAILABLE"  # exists but can't confirm access
+    assert r["access_auditing"] == "off"
+    assert r["file_exists"] is True
+
+
+def test_file_access_windows_not_found_is_clean():
+    ex = _winrm_executor()
+    r = ex._parse_file_access_windows(_fa(exists=False), "C:\\nope.txt")
+    assert r["assessment"] == "CLEAN"
+    assert r["file_exists"] is False
+
+
+# --- Windows file-audit arming (PLWATCH analogue) ------------------------------
+
+def test_enable_file_audit_noop_on_ssh():
+    ex = _executor()  # transport ssh
+    assert ex.enable_file_audit("C:\\flag.txt") is False
+    assert ex._win_audit_path is None
+
+
+def test_enable_file_audit_arms_and_tracks_policy_change():
+    ex = _winrm_executor()
+    with patch.object(ex, "_ps", return_value="PL_POLICY_SET\nPL_SACL_SET\n") as ps:
+        assert ex.enable_file_audit("C:\\Users\\x\\flag.txt") is True
+    assert ex._win_audit_path == "C:\\Users\\x\\flag.txt"
+    assert ex._win_audit_policy_changed is True
+    assert ps.called
+
+
+def test_enable_file_audit_missing_file_returns_false():
+    ex = _winrm_executor()
+    with patch.object(ex, "_ps", return_value="PL_NOFILE"):
+        assert ex.enable_file_audit("C:\\nope.txt") is False
+    assert ex._win_audit_path is None
+
+
+def test_disable_file_audit_reverts_and_clears():
+    ex = _winrm_executor()
+    ex._win_audit_path = "C:\\flag.txt"
+    ex._win_audit_policy_changed = True
+    with patch.object(ex, "_ps", return_value="") as ps:
+        ex._disable_file_audit()
+    assert "success:disable" in ps.call_args.args[0]  # policy reverted (we set it)
+    assert ex._win_audit_path is None
+
+
+# --- Windows persistence eviction (remove_persistence_windows) ------------------
+
+def test_remove_persistence_windows_refuses_on_ssh_and_no_baseline():
+    assert _executor().remove_persistence_windows()["assessment"] == "REFUSED"  # ssh
+    ex = _winrm_executor()
+    ex._win_persist_baseline = None
+    assert ex.remove_persistence_windows()["assessment"] == "REFUSED"
+
+
+def test_remove_persistence_windows_strips_new_entries():
+    ex = _winrm_executor()
+    ex._win_persist_baseline = {"service|foo|x"}
+    live = ex._win_persist_baseline | {"run|HKLM\\Run|evil|c:\\b.exe", "task|EvilTask"}
+    with patch.object(ex, "_list_win_persistence", return_value=live), \
+         patch.object(ex, "_remove_win_persist_entry", return_value=(True, "PL_OK")) as rm:
+        r = ex.remove_persistence_windows()
+    assert r["assessment"] == "REMOVED"
+    assert sorted(r["removed_entries"]) == ["run|HKLM\\Run|evil|c:\\b.exe", "task|EvilTask"]
+    assert rm.call_count == 2  # only post-baseline entries, not "service|foo|x"
+
+
+def test_remove_persistence_windows_clean_and_failure_paths():
+    ex = _winrm_executor()
+    ex._win_persist_baseline = {"service|foo|x"}
+    with patch.object(ex, "_list_win_persistence", return_value=set(ex._win_persist_baseline)):
+        assert ex.remove_persistence_windows()["assessment"] == "CLEAN"
+    live = ex._win_persist_baseline | {"task|Stubborn"}
+    with patch.object(ex, "_list_win_persistence", return_value=live), \
+         patch.object(ex, "_remove_win_persist_entry", return_value=(False, "Access denied")):
+        r = ex.remove_persistence_windows()
+    assert r["assessment"] == "INFO"
+    assert r["failed"][0]["entry"] == "task|Stubborn"
+
+
+def test_remove_win_persist_entry_dispatches_by_kind():
+    ex = _winrm_executor()
+    with patch.object(ex, "_ps", return_value="PL_OK") as ps:
+        assert ex._remove_win_persist_entry("run|HKLM\\Run|evil|c")[0] is True
+        assert "Remove-ItemProperty" in ps.call_args.args[0]
+        assert ex._remove_win_persist_entry("service|evilsvc|x")[0] is True
+        assert "sc.exe delete" in ps.call_args.args[0]
+        assert ex._remove_win_persist_entry("task|EvilTask")[0] is True
+        assert "schtasks /delete" in ps.call_args.args[0]

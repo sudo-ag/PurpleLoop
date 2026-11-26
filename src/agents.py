@@ -28,6 +28,8 @@ WINDOWS_ONLY_SENSORS = frozenset({
     "investigate_processes_windows",
     "investigate_logins_windows",
     "investigate_persistence_windows",
+    "investigate_network_windows",
+    "investigate_file_access_windows",
 })
 
 
@@ -710,6 +712,35 @@ class Agent:
                 {
                     'type': 'function',
                     'function': {
+                        'name': 'investigate_network_windows',
+                        'description': 'WINDOWS-ONLY network sensor — use this instead of investigate_network when the target OS is windows. Lists TCP listeners and established sessions (Get-NetTCPConnection); a foreign established session from a non-control IP is an active attacker foothold.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'investigate_file_access_windows',
+                        'description': 'WINDOWS-ONLY file-access sensor — use this instead of investigate_file_access when the target OS is windows. Reports owner/ACL posture for a file and confirms access via Event 4663. Access detection requires object-access auditing to be armed; if it is off, the sensor reports it cannot confirm access (never a false CLEAN).',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {
+                                'file_path': {
+                                    'type': 'string',
+                                    'description': 'Full Windows path to the sensitive file (e.g. C:\\Users\\Administrator\\Desktop\\flag.txt).',
+                                },
+                            },
+                            'required': [],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
                         'name': 'investigate_network',
                         'description': 'Examine network connections and listening ports on the target system for suspicious activity. Returns structured data with connection details and suspicion flags.',
                         'parameters': {
@@ -898,6 +929,18 @@ class Agent:
                                 },
                             },
                             'required': ['user'],
+                        },
+                    },
+                },
+                {
+                    'type': 'function',
+                    'function': {
+                        'name': 'remove_persistence_windows',
+                        'description': 'WINDOWS-ONLY eviction — use this instead of remove_persistence when the target OS is windows. Removes every autostart entry (Run key, service, scheduled task) planted since engagement start, i.e. what investigate_persistence_windows flags. No arguments; refuses if no baseline exists.',
+                        'parameters': {
+                            'type': 'object',
+                            'properties': {},
+                            'required': [],
                         },
                     },
                 },
@@ -1310,6 +1353,22 @@ class Agent:
             except Exception as e:
                 return json.dumps({"tool": "investigate_persistence_windows", "status": "error", "error": str(e)})
 
+        elif tool_call['function']['name'] == 'investigate_network_windows':
+            try:
+                result = self.executor.investigate_network_windows()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_network_windows", "status": "error", "error": str(e)})
+
+        elif tool_call['function']['name'] == 'investigate_file_access_windows':
+            args = tool_call['function']['arguments']
+            file_path = args.get('file_path') or r"C:\Users\Administrator\Desktop\flag.txt"
+            try:
+                result = self.executor.investigate_file_access_windows(file_path)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "investigate_file_access_windows", "status": "error", "error": str(e), "file_path": file_path})
+
         elif tool_call['function']['name'] == 'investigate_network':
             try:
                 result = self.executor.investigate_network()
@@ -1430,6 +1489,13 @@ class Agent:
                 return json.dumps(result)
             except Exception as e:
                 return json.dumps({"tool": "remove_persistence", "status": "error", "error": str(e), "target_user": user})
+
+        elif tool_call['function']['name'] == 'remove_persistence_windows':
+            try:
+                result = self.executor.remove_persistence_windows()
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"tool": "remove_persistence_windows", "status": "error", "error": str(e)})
 
         elif tool_call['function']['name'] == 'remediate_escalation_surface':
             # Live even in observe mode: closing the whole surface is an on-host

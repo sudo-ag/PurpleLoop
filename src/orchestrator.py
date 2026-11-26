@@ -907,6 +907,15 @@ class Orchestrator:
             except Exception as e:
                 print(f"Could not arm connection logging (continuing): {e}")
 
+        # 1d. On a Windows target, arm object-access auditing on the objective file
+        # so an attacker read emits Event 4663 (investigate_file_access_windows ->
+        # BREACH). No-op on non-WinRM executors. Removed at disconnect.
+        if self._executor_supports(blue_executor, "enable_file_audit"):
+            try:
+                blue_executor.enable_file_audit(self.flag_path)
+            except Exception as e:
+                print(f"Could not arm file auditing (continuing): {e}")
+
         # 2. Knowledge is owned by the agents: they loaded (and compacted) their
         # own lessons at construction and persist via reflect() below.
 
