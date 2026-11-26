@@ -438,10 +438,16 @@ def run_episodes(
     red_model: Optional[str] = None,
     blue_model: Optional[str] = None,
     transport: str = "ssh",
+    flag_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary. red_model/blue_model override `model` per side."""
     model = model or os.getenv("MODEL", "llama3.2:latest")
+    # The objective file drives both blue's file-audit arming and the win check.
+    # Default per transport so Linux invocations are unchanged and WinRM gets a
+    # sensible Windows path.
+    flag_path = flag_path or (r"C:\Users\Administrator\Desktop\flag.txt"
+                              if transport == "winrm" else "/root/flag.txt")
     reports_dir.mkdir(parents=True, exist_ok=True)
     # Default to the scripted reset on a real box; mock has no state to reset.
     if reset_fn is None and reset and host != "mock":
@@ -461,7 +467,7 @@ def run_episodes(
         orch = Orchestrator(
             red_agent=red, blue_agent=blue,
             detect_within_turns=detect_within_turns, observe=observe,
-            remediate_grace=remediate_grace,
+            remediate_grace=remediate_grace, flag_path=flag_path,
         )
         winner = orch.run_simulation(max_turns=max_turns)
         card = build_scorecard(orch.state, winner, i,
@@ -530,6 +536,9 @@ def main() -> None:
     p.add_argument("--narrate", action="store_true", help="Polish each agent's debrief into LLM prose (non-deterministic). Off = deterministic, reproducible report.")
     p.add_argument("--objective", choices=["foothold", "exfil", "root", "persistence"], default="root",
                    help="The engagement's win condition. 'persistence': red wins if its planted SSH key survives; blue wins only by removing it.")
+    p.add_argument("--flag-path", default=None,
+                   help="Objective file path (drives blue's file-audit arming and the win check). "
+                        "Defaults to /root/flag.txt (ssh) or a Windows Desktop path (winrm).")
     a = p.parse_args()
     run_episodes(
         a.episodes, host=a.host, model=a.model, max_turns=a.max_turns,
@@ -538,6 +547,7 @@ def main() -> None:
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
         reset=not a.no_reset, narrate=a.narrate, objective=a.objective,
         red_model=a.red_model, blue_model=a.blue_model, transport=a.transport,
+        flag_path=a.flag_path,
     )
 
 

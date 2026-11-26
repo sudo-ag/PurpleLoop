@@ -24,6 +24,58 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-25 — Windows detect→respond loop PROVEN: blue sees and acts on Windows)
+
+Continued the "drop them anywhere" push. Blue now has a **full Windows
+capability** — it **sees** (5 ported sensors) and **acts** (4 response tools) —
+with the detect→respond loop proven end-to-end on `.17` (Windows 11) by a gated
+live harness.
+
+**Sensors (5):** `investigate_{processes,logins,persistence,network,file_access}_windows`.
+Separate `*_windows` tools (blue picks by `investigate_environment` OS; mirror
+guard relabels them `not_applicable` on Linux). Each reuses the existing detection
+doctrine unchanged — baseline-diff, private-range foothold gate, UNAVAILABLE-not-
+CLEAN on a sensor gap — so the north-star "generalize, don't tune" holds. All
+live-validated.
+
+**Auditing-arming (Windows PLWATCH):** `enable_file_audit()` sets a SACL + enables
+the File System audit policy at engagement start (reverted at disconnect), making
+`investigate_file_access_windows` detect real access (Event 4663) instead of just
+posture. Live-proven: a foreign read → BREACH.
+
+**Response tools (4):** `remove_persistence_windows` (strip post-baseline Run keys/
+services/tasks), `contain_attacker_windows` (firewall block, routes through the
+shared thin-evidence/observe dispatch), `remediate_account_windows` (disable +
+kill), `revoke_escalation_windows` (strip Administrators + kill). All reversible,
+refuse protected/defender accounts, cleaned up at disconnect.
+
+**Plumbing:** `_ps()` (PowerShell EncodedCommand), OS-aware `mark_analysis_window`
+clock, `--flag-path` arena arg (Windows default on winrm).
+
+**Proof:** `tests/test_windows_loop_live.py` (gated by `PL_LIVE_WINRM=1`) — a
+scripted no-LLM attacker plants a Run key, takes a foothold into Administrators,
+reads the audited flag as that user; blue detects (persistence + file-access
+BREACH) and evicts, and the test asserts the box ends clean. **Passed in 38s on
+`.17`, zero residue.** 647 unit tests green (+32).
+
+**Commits:** `19f80fb`→`9b89a9b` (6). `--flag-path` + the live harness are **staged,
+not committed** (host classifier blocked the commit on the harness's security
+vocabulary — commit manually). Commits this session lack the `Co-Authored-By` trailer
+(classifier blocked multi-line/amend).
+
+**RESUME HERE:**
+1. **Next project — red Windows attack doctrine.** Blue's half of the loop is done
+   and proven; red is still Linux-shaped and was "blocked" on Windows. Teach red to
+   recon/foothold/plant on Windows for a real LLM-vs-LLM Windows episode. (Standing
+   reminder applies: offensive content trips the main-turn classifier.)
+2. Commit the two staged changes; optionally backfill commit trailers via rebase.
+3. Shortcuts to revisit (grep `shortcut:`): Linux-shaped reverse-shell markers,
+   Win8+ cmdlets w/ no netsh fallback, public-C2 foothold blind spot, `--no-reset`
+   removal permanence.
+
+**Box:** `.17` = Windows 11 Pro (`vagrant`/`vagrant`, WinRM 5985) via jump `.11`
+(`kali`/`kali`). `--no-reset` for WinRM. Left clean.
+
 ## Latest status (2026-11-24 cont'd #3 — Windows capability: WinRM transport SHIPPED, self-checker built)
 
 Pivoted from the model matrix to **generalizing the agents off the Linux dojo**
