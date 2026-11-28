@@ -24,6 +24,55 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-28 cont'd — Windows persistence PURSUIT Phase 1 merged)
+
+Turned the single-shot Windows persistence engagement into a multi-round
+**pursuit**: red re-plants through a different technique after blue evicts, the
+episode runs to a horizon, and the winner is whoever holds standing persistence.
+Brainstormed → design doc → plan → built inline (TDD) → fresh-Opus review →
+live-validated. Merged to `master` (`36a8874`→`6acc595`, 700 tests green).
+
+**Built (SDD, all test-first):**
+- **Plant registry** on `SimulationState` (`persistence_plants` list of
+  `{identity, planted_turn, evicted_turn}`; `record_plant`/`mark_evicted`/
+  `standing_plants`). Recording triggers on a task/service creation signal OR a
+  persistence-shaped red command, confirmed by the baseline-diff (so Startup
+  drops / Run keys with no "...created" output still register).
+- **Startup-folder class** added to `_list_win_persistence` + `_remove_win_persist_entry`
+  (blue sees AND evicts it). Red repertoire gains the Startup drop; the steer gate
+  is now "nothing stands" (not ever-planted), so red rotates after an eviction.
+- **Loop to horizon:** eviction no longer ends the episode; `persistence_horizon_winner`
+  decides from the registry (standing → red; clean board blue saw → blue; else
+  draw). Prevention-before-plant stays an early blue win. Horizon = 32 turns for
+  `--objective persistence`.
+- **Unconditional cleanup** (`clean_all_persistence`) in `run_simulation`'s finally
+  on blue's executor (holds the clean baseline), win or lose.
+
+**Live result (`.17`, glm v glm, 32 turns):** red WON by holding standing
+persistence across Startup drops + Run keys (recorded via the new command trigger
+— proves the review's Critical fix live). Old system would have mis-scored it a
+draw. Red "found another way" across 5+ techniques. Blue fumbled (duplicate clean
+heartbeats, never swept persistence), so eviction-triggered rotation wasn't
+exercised — a blue-competence gap, not code.
+
+**RESUME HERE / Phase 2:**
+0. Boxes: `.17` was cleaned + re-provisioned at session end; confirm reachable.
+1. **Cleanup coverage gap (do first):** `clean_all_persistence` + the sensor only
+   cover task/service/runkey/startup. Red escaped via `HKCU\Environment`
+   `UserInitMprLogonScript`, Winlogon `Userinit`, `NT\CurrentVersion\Windows\Run`
+   — I cleaned `.17` by hand. Extend BOTH the sensor and the cleanup to these
+   classes (this is the dirty-box risk made real).
+2. **Phase 2 (design doc §B/C):** split blue vision into per-class sweeps (cost =
+   turns) + add the WMI event-subscription technique end-to-end. Phase 3:
+   anticipation scoring.
+3. Rerun the pursuit with a sharper blue to actually see plant→evict→re-plant.
+4. Deferred minors (review ledger): per-command live-sweep cost;
+   `persistence_baseline_ever_read` not set by a clean remove-sweep; embedded-quote
+   Startup path handled but untested.
+
+Design: `docs/superpowers/specs/2026-11-28-windows-persistence-pursuit-design.md`.
+Plan: `docs/superpowers/plans/2026-11-28-windows-persistence-pursuit-phase1.md`.
+
 ## Latest status (2026-11-28 — FIRST BLUE WIN on Windows: two-sided LLM loop works)
 
 Ran the first real two-sided LLM Windows episodes on `.17` (Win11). Both the
