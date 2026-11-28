@@ -1389,6 +1389,10 @@ class ToolExecutor:
             "try { schtasks /query /fo csv /nh 2>$null | ForEach-Object { "
             "$n=($_ -split '\",\"')[0].Trim('\"'); "
             "if ($n) { $items += \"task|$n\" } } } catch {} "
+            "foreach ($d in @([Environment]::GetFolderPath('Startup'), "
+            "\"$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp\")) { "
+            "try { if ($d -and (Test-Path $d)) { Get-ChildItem -LiteralPath $d -File "
+            "-Force -EA SilentlyContinue | ForEach-Object { $items += \"startup|$($_.FullName)\" } } } catch {} } "
             "$items | ConvertTo-Json -Compress"
         )
         raw = self._ps(script).strip()
@@ -2495,6 +2499,11 @@ class ToolExecutor:
             name = parts[1].replace("'", "''")
             out = self._ps(f"$r = schtasks /delete /tn '{name}' /f 2>&1; "
                            "if ($LASTEXITCODE -eq 0) { 'PL_OK' } else { $r }")
+        elif kind == "startup" and len(parts) >= 2 and parts[1]:
+            # Rejoin in case a path ever held '|' (it won't, but stay safe).
+            path = "|".join(parts[1:]).replace("'", "''")
+            out = self._ps(f"try {{ Remove-Item -LiteralPath '{path}' -Force -EA Stop; "
+                           "'PL_OK' } catch { $_.Exception.Message }")
         else:
             return (False, f"unrecognized entry: {entry[:60]}")
         return ("PL_OK" in out, out.strip()[:160])
