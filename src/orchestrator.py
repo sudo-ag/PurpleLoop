@@ -101,9 +101,34 @@ class SimulationState:
     staged_remediation_user: Optional[str] = None  # account blue asked to lock while the grace window is still open (not yet applied)
     red_persistence_planted_turn: Optional[int] = None  # turn red planted an SSH-key backdoor (no tier -- a detection/defense surface on top of whatever tier red already holds)
     blue_persistence_removed_turn: Optional[int] = None  # turn blue evicted a planted key via remove_persistence (removed: True); the persistence-objective win hinges on this
+    # Multi-round persistence pursuit: a registry of every verified plant and its
+    # eviction. identity is a _list_win_persistence string (e.g. task|\Name,
+    # startup|<path>). A plant "stands" until it has an evicted_turn.
+    persistence_plants: List[Dict[str, Any]] = field(default_factory=list)
+    persistence_baseline_ever_read: bool = False  # blue landed at least one readable persistence sweep (guards the horizon verdict against a false-clean)
     blue_case: Dict[str, Any] = field(default_factory=new_case)  # blue's per-episode case file (leads + hypotheses)
     red_lesson: Optional[str] = None   # red's per-episode reflect() takeaway (for the debrief)
     blue_lesson: Optional[str] = None  # blue's per-episode reflect() takeaway (for the debrief)
+
+    def record_plant(self, identities, turn: int) -> None:
+        """Append one record per identity not already STANDING (a re-appeared
+        identity that was previously evicted is a new round, so a new record)."""
+        standing = {p["identity"] for p in self.standing_plants()}
+        for ident in identities:
+            if ident not in standing:
+                self.persistence_plants.append(
+                    {"identity": ident, "planted_turn": turn, "evicted_turn": None})
+                standing.add(ident)
+
+    def mark_evicted(self, identities, turn: int) -> None:
+        """Set evicted_turn on every STANDING record whose identity was removed."""
+        ids = set(identities)
+        for p in self.persistence_plants:
+            if p["evicted_turn"] is None and p["identity"] in ids:
+                p["evicted_turn"] = turn
+
+    def standing_plants(self) -> List[Dict[str, Any]]:
+        return [p for p in self.persistence_plants if p["evicted_turn"] is None]
 
 class Orchestrator:
     def __init__(self, red_agent: Agent, blue_agent: Agent, max_tools_per_turn: int = 3, stall_limit: int = 5, flag_path: str = "/root/flag.txt", detect_within_turns: int = 3, dashboard_url: Optional[str] = None, knowledge_file: str = "knowledge.json", observe: bool = False, remediate_grace: int = 0):
