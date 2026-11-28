@@ -497,6 +497,33 @@ class Orchestrator:
                 return False
         return True
 
+    def _record_persistence_events(self, role: str, tool_call: Dict[str, Any], output: str) -> None:
+        """Windows pursuit bookkeeping: on a verified red plant, capture the NEW
+        canonical autostart entries (baseline-diff) and register each; on a blue
+        removal, mark those identities evicted; and note when blue lands a readable
+        persistence sweep (guards the horizon verdict against a false-clean)."""
+        ex = getattr(self.blue_agent, "executor", None)
+        if ex is None or getattr(ex, "transport", None) != "winrm":
+            return
+        turn = self.state.turn
+        if role == "red" and self._check_red_persistence_planted(tool_call, output):
+            baseline = getattr(ex, "_win_persist_baseline", None)
+            ok, new = ex._diff_baseline(baseline, ex._list_win_persistence())
+            if ok and new:
+                self.state.record_plant(new, turn)
+        if role == "blue":
+            try:
+                data = json.loads(output)
+            except Exception:
+                return
+            if not isinstance(data, dict):
+                return
+            if data.get("tool") == "remove_persistence_windows" and data.get("removed_entries"):
+                self.state.mark_evicted(data["removed_entries"], turn)
+            if (data.get("tool") == "investigate_persistence_windows"
+                    and data.get("assessment") != "UNAVAILABLE"):
+                self.state.persistence_baseline_ever_read = True
+
     def _check_blue_persistence_removed(self, output: str) -> bool:
         """Blue evicted the plant: a remove_persistence result with removed == True
         (Linux key stripped), or a remove_persistence_windows result that removed
@@ -704,6 +731,9 @@ class Orchestrator:
                     if role == "red" and self.state.red_persistence_planted_turn is None \
                             and self._check_red_persistence_planted(tool_call, output):
                         self.state.red_persistence_planted_turn = self.state.turn
+                    # Multi-round registry: record EVERY verified plant/eviction
+                    # (not just the first), the spine of the persistence pursuit.
+                    self._record_persistence_events(role, tool_call, output)
                     if role == "red" and self.state.red_access_turn is None \
                             and self._check_red_victory(output):
                         self.state.red_captured_flag = True
