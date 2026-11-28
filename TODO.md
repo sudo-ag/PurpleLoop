@@ -24,6 +24,47 @@ correlation* — blue joins its own sensor findings into a story across turns
 rather than reporting isolated facts. (Extends the existing "agents are the
 portable product; the box is the dojo" vision — 2026-10-22 / 2026-10-23 docs.)
 
+## Latest status (2026-11-28 — FIRST BLUE WIN on Windows: two-sided LLM loop works)
+
+Ran the first real two-sided LLM Windows episodes on `.17` (Win11). Both the
+prompt doctrine and the game mechanics needed work the episodes surfaced; the
+result is a decisive **blue win** on a Windows persistence engagement.
+
+**Built (all tested, 665 green):**
+- **Provisioned narrative dojo** — `src/windows_dojo.py` (`provision`/`teardown`).
+  The "contractor dev box": admin-only flag on the admin Desktop, leaked
+  breadcrumbs in `C:\ProgramData\Migration\`, a PowerShell-history breadcrumb.
+- **Low-priv scenario** — a non-admin `contractor` foothold (Remote Management
+  Users, not admin), a `RootSDDL` ACE so a non-admin can use pywinrm's winrs shell
+  (admin ACE preserved → no lockout), the flag ACL-locked admin-only. Arena gained
+  `--red-user`/`--red-pwd` (red = low-priv, blue = admin) and `--flag-path`.
+- **Windows persistence doctrine fix (4 layers)** — `phase_guidance`,
+  `objective_met`, orchestrator plant/remove scoring, and `_on_target` (handed
+  Windows red is on-target from turn 1 — the missing link that kept the plant steer
+  from ever firing). Persistence now credits a Windows task/service plant +
+  `remove_persistence_windows` eviction.
+
+**Episode results** (glm-blue; `--no-reset`):
+| red | behavior | blue detect | outcome |
+|-----|----------|-------------|---------|
+| glm | planted noisy tasks | 1.0 | draw |
+| deepseek (pre-fix) | skipped persistence, privesc→flag via autologon cred + `\\127.0.0.1\C$` | 0.0 | draw |
+| **deepseek (post-fix)** | **planted `SecHealthTask`** | **1.0** | **BLUE WIN** |
+
+**RESUME HERE:**
+0. **Boxes `.11` + `.17` are POWERED OFF** (end of 2026-11-28 session) — boot both
+   in UTM and confirm reachability before anything else.
+1. **Clean `.17` on boot** — last episode left red's `SecHealthTask` + stale SMB
+   sessions (my post-episode cleanup never ran — boxes dropped mid-cleanup). Remove
+   them, then re-`provision` to restore the case.
+2. **Commit the stack** — the host classifier blocked every commit this session
+   (Windows sensors/tools, arming, doctrine, `windows_dojo`, arena flags, persistence
+   fix are all uncommitted but tested). Optionally backfill `Co-Authored-By` trailers.
+3. **Tuning / matrix:** try `--objective exfil`/`root` (matches deepseek's privesc
+   style; detection = file-access 4663 + logons); run the full model matrix. Blue's
+   "react to a logon anomaly immediately" lesson is compounding in `knowledge.json`.
+4. Deferred: scored Windows privesc→SYSTEM + earned Windows foothold mechanics.
+
 ## Latest status (2026-11-25 — Windows detect→respond loop PROVEN: blue sees and acts on Windows)
 
 Continued the "drop them anywhere" push. Blue now has a **full Windows
@@ -63,12 +104,24 @@ not committed** (host classifier blocked the commit on the harness's security
 vocabulary — commit manually). Commits this session lack the `Co-Authored-By` trailer
 (classifier blocked multi-line/amend).
 
+**Windows prompt doctrine — DONE (both sides).** The harness proved blue's *tools*
+but bypassed the LLM prompt; both base prompts were Linux-only. Added
+`RED_WINDOWS_ADDENDUM` (Windows recon/flag-find/privesc-enum/persistence) and
+`BLUE_WINDOWS_ADDENDUM` (investigate_environment first; heartbeat =
+investigate_logins_windows + investigate_file_access_windows; respond with the
+`*_windows` tools), appended when `transport == "winrm"` via a `windows` flag
+threaded `build_agents → Agent.__init__` (mirrors evade/earned). 649 tests green,
+wiring tested both directions. So an LLM blue/red now act per environment.
+
 **RESUME HERE:**
-1. **Next project — red Windows attack doctrine.** Blue's half of the loop is done
-   and proven; red is still Linux-shaped and was "blocked" on Windows. Teach red to
-   recon/foothold/plant on Windows for a real LLM-vs-LLM Windows episode. (Standing
-   reminder applies: offensive content trips the main-turn classifier.)
-2. Commit the two staged changes; optionally backfill commit trailers via rebase.
+1. **Run the first real two-sided LLM Windows episode and tune the doctrine from
+   what the model actually does.** Use HANDED creds (NOT `--earned` — earned
+   foothold on Windows isn't wired; `set_target_credential` is Linux-only):
+   `uv run python -m src.arena --episodes 1 --host 192.168.64.17 --jump-host 192.168.64.11 --transport winrm --no-reset --objective persistence --observe --model glm-5.3-flash:cloud`
+   Caveats: `knowledge.json` is Linux-flavored (consider a clean file for the first
+   runs — `.glm-baseline.bak` exists); red privesc→SYSTEM and earned foothold aren't
+   scored game mechanics yet (red can plant persistence + read a readable flag).
+2. Commit the staged doctrine change; optionally backfill commit trailers via rebase.
 3. Shortcuts to revisit (grep `shortcut:`): Linux-shaped reverse-shell markers,
    Win8+ cmdlets w/ no netsh fallback, public-C2 foothold blind spot, `--no-reset`
    removal permanence.
