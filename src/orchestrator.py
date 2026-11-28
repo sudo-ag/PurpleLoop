@@ -1012,6 +1012,11 @@ class Orchestrator:
         if blue_lesson:
             print(f"Blue learned: {blue_lesson}")
 
+        # Persistence pursuit: the horizon verdict is decided by what still stands
+        # (the in-memory registry), not the flag-access timing below.
+        if getattr(self.red_agent, "objective", "root") == "persistence":
+            return self.referee.persistence_horizon_winner()
+
         # Horizon reached without an in-loop decision. Blue takes precedence
         # (an in-time detection already set blue_victory); otherwise red wins if
         # it reached the objective at all, since the window went unanswered.

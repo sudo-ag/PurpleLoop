@@ -83,16 +83,15 @@ class Referee:
     def resolve_outcome(self) -> Optional[str]:
         """Decide the graded winner from access/detection timing, or None while
         the detection window is still open. Sets state.blue_victory on a blue win."""
-        # Persistence: the engagement is decided by whether red's planted key
-        # SURVIVES, not by root/flag access. Reaching root must NOT end the
-        # episode (that short-circuits the plant->hunt->evict sub-game), so the
-        # tier-timing outcome below is suppressed. Blue evicting the key is the
-        # one early end (a fast blue win); otherwise the episode runs to
-        # max-turns and build_scorecard's persistence_winner grades it.
+        # Persistence pursuit: decided by whether any plant SURVIVES to the
+        # horizon, not by root/flag access and not by the first eviction (red
+        # re-plants). Reaching root must NOT end the episode, and neither does an
+        # eviction — only a prevention (foothold cut before any plant) ends early
+        # as a blue win; otherwise the episode runs to max-turns and
+        # persistence_horizon_winner grades it by what still stands.
         if self.objective == "persistence":
-            if self.state.blue_persistence_removed_turn is not None:
-                self.state.blue_victory = True
-                return "blue"
+            # Eviction no longer ends the episode (the pursuit runs to the horizon,
+            # where persistence_horizon_winner decides by what still stands).
             # Prevention: blue cut the foothold (account lock or IP block) and red
             # never planted — there is nothing to evict, so the cut IS the win. Once
             # a plant lands it survives an account lock (a task/service keeps running),
@@ -135,4 +134,16 @@ class Referee:
         if access is not None and self.state.turn - access > self.detect_within_turns:
             return "red"   # red reached the objective and blue missed the window
 
+        return None
+
+    def persistence_horizon_winner(self):
+        """End-of-episode verdict for a persistence pursuit, from the in-memory
+        registry (no live read — executors are disconnected by now): any plant
+        still standing → red; a clean board that blue actually saw (a plant was
+        recorded, or blue landed a readable sweep) → blue; otherwise unproven → None."""
+        if self.state.standing_plants():
+            return "red"
+        if self.state.persistence_plants or self.state.persistence_baseline_ever_read:
+            self.state.blue_victory = True
+            return "blue"
         return None

@@ -61,10 +61,11 @@ def test_persistence_remediation_after_plant_is_not_a_prevention_win():
     assert ref.resolve_outcome() is None
 
 
-def test_persistence_blue_eviction_ends_it_as_blue_win():
+def test_persistence_eviction_does_not_end_episode():
+    # Eviction is progress, not victory: the episode runs on so red can re-plant
+    # through another technique. The horizon decides, not the first removal.
     state = SimulationState()
-    state.red_access_turn = 3
+    state.record_plant(["task|\\A"], turn=4)   # a plant still stands
     state.blue_persistence_removed_turn = 6
     ref = Referee(state, detect_within_turns=3, objective="persistence")
-    assert ref.resolve_outcome() == "blue"
-    assert state.blue_victory is True
+    assert ref.resolve_outcome() is None
