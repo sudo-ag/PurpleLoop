@@ -258,3 +258,20 @@ def test_build_agents_separate_red_cred_on_winrm():
                            "192.168.64.11", "kali", "kali", False, False, False,
                            transport="winrm")
     assert red2.executor.user == "vagrant"
+
+
+# --- persistence horizon default (Phase 1) ------------------------------------
+
+def test_persistence_defaults_to_32_turns():
+    from src.arena import _resolve_max_turns
+    assert _resolve_max_turns(None, "persistence") == 32
+
+
+def test_explicit_max_turns_overrides_persistence_default():
+    from src.arena import _resolve_max_turns
+    assert _resolve_max_turns(10, "persistence") == 10
+
+
+def test_non_persistence_keeps_20_default():
+    from src.arena import _resolve_max_turns
+    assert _resolve_max_turns(None, "root") == 20

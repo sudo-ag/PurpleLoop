@@ -419,11 +419,19 @@ def build_agents(
     return red, blue
 
 
+def _resolve_max_turns(max_turns: Optional[int], objective: str) -> int:
+    """Explicit --max-turns always wins; otherwise a persistence pursuit gets a
+    longer horizon (plant/hunt/evict/re-plant across techniques needs the room)."""
+    if max_turns is not None:
+        return max_turns
+    return 32 if objective == "persistence" else 20
+
+
 def run_episodes(
     n: int,
     host: str = "mock",
     model: Optional[str] = None,
-    max_turns: int = 20,
+    max_turns: Optional[int] = None,
     user: str = "vagrant",
     pwd: str = "vagrant",
     jump_host: Optional[str] = None,
@@ -477,7 +485,7 @@ def run_episodes(
             detect_within_turns=detect_within_turns, observe=observe,
             remediate_grace=remediate_grace, flag_path=flag_path,
         )
-        winner = orch.run_simulation(max_turns=max_turns)
+        winner = orch.run_simulation(max_turns=_resolve_max_turns(max_turns, objective))
         card = build_scorecard(orch.state, winner, i,
                                tiers=orch.tier_scoreboard(), verdict=orch.verdict(),
                                objective=objective,
@@ -529,7 +537,8 @@ def main() -> None:
     p.add_argument("--blue-model", default=None, help="Override the blue agent's model (falls back to --model).")
     p.add_argument("--transport", choices=["ssh", "winrm"], default="ssh",
                    help="Target transport. 'winrm' (Windows) is jump-routed through --jump-host, which must run pywinrm.")
-    p.add_argument("--max-turns", type=int, default=20)
+    p.add_argument("--max-turns", type=int, default=None,
+                   help="Turn horizon. Default: 20, or 32 for --objective persistence.")
     p.add_argument("--user", default="vagrant")
     p.add_argument("--pwd", default="vagrant")
     p.add_argument("--red-user", default=None,
