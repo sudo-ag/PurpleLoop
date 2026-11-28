@@ -2508,6 +2508,25 @@ class ToolExecutor:
             return (False, f"unrecognized entry: {entry[:60]}")
         return ("PL_OK" in out, out.strip()[:160])
 
+    def clean_all_persistence(self) -> Dict[str, Any]:
+        """Unconditional between-episode sweep: remove every post-baseline autostart
+        entry across all classes, regardless of who won the episode, so a plant that
+        outlived it never dirties the next run. No-op without a trustworthy baseline
+        (never a blanket wipe). Not a game action — invoked at teardown, not by blue."""
+        out: Dict[str, Any] = {"removed": [], "failed": []}
+        if self.transport != "winrm" or self._win_persist_baseline is None:
+            return out
+        ok, new = self._diff_baseline(self._win_persist_baseline, self._list_win_persistence())
+        if not ok:
+            return out
+        for entry in new:
+            removed, detail = self._remove_win_persist_entry(entry)
+            if removed:
+                out["removed"].append(entry)
+            else:
+                out["failed"].append({"entry": entry, "detail": detail})
+        return out
+
     def remove_persistence_windows(self) -> Dict[str, Any]:
         """Windows counterpart of remove_persistence: strip every autostart entry
         (Run key / service / scheduled task) present now but absent from the

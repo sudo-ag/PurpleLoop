@@ -919,6 +919,18 @@ class Orchestrator:
     def _executor_supports(executor: Any, name: str) -> bool:
         return hasattr(executor, name) and callable(getattr(executor, name))
 
+    def _cleanup_persistence(self) -> None:
+        """Between-episode reset: on a Windows engagement, strip every post-baseline
+        autostart entry on blue's executor (which holds the clean baseline), win or
+        lose. Best-effort; a missing baseline is a safe no-op inside the method."""
+        ex = getattr(self.blue_agent, "executor", None)
+        if ex is not None and getattr(ex, "transport", None) == "winrm" \
+                and hasattr(ex, "clean_all_persistence"):
+            try:
+                ex.clean_all_persistence()
+            except Exception as e:
+                print(f"Persistence cleanup failed (continuing): {e}")
+
     def _executors(self) -> List[Any]:
         """Distinct executors to manage: red's target channel, red's attacker
         box (earned foothold), and blue's — de-duplicated by identity (several
@@ -997,6 +1009,10 @@ class Orchestrator:
                 # (Actual lesson summarization happens at the end,
                 # but we could add intermediate checkpoints here if desired)
         finally:
+            # 2b. Unconditionally strip any persistence planted this episode BEFORE
+            # disconnecting (needs a live connection + blue's clean baseline), so a
+            # red win with a standing plant never carries onto the next episode.
+            self._cleanup_persistence()
             # 3. Always disconnect (best-effort), each distinct executor.
             for ex in self._executors():
                 if self._executor_supports(ex, "disconnect"):
