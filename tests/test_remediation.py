@@ -113,6 +113,13 @@ def test_check_blue_remediation_ignores_failure():
     assert _orch()._check_blue_remediation(out) is None
 
 
+def test_check_blue_remediation_parses_windows_variant():
+    # On a Windows engagement blue uses remediate_account_windows; the scorer must
+    # recognise it like the Linux tool, else blue's account-lock is invisible.
+    out = json.dumps({"tool": "remediate_account_windows", "remediated": True, "target_user": "contractor"})
+    assert _orch()._check_blue_remediation(out) == "contractor"
+
+
 def test_remediation_before_access_is_a_blue_win():
     o = _orch()
     o.state.blue_remediate_turn = 3

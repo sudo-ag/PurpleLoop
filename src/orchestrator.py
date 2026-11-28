@@ -209,7 +209,8 @@ class Orchestrator:
             data = json.loads(output)
         except Exception:
             return None
-        if (isinstance(data, dict) and data.get("tool") == "remediate_account"
+        if (isinstance(data, dict)
+                and data.get("tool") in ("remediate_account", "remediate_account_windows")
                 and data.get("remediated") is True):
             return data.get("target_user")
         return None

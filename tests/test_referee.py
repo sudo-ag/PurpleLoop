@@ -42,6 +42,25 @@ def test_persistence_does_not_end_on_root_access():
     assert state.blue_victory is False
 
 
+def test_persistence_blue_prevention_before_plant_is_blue_win():
+    # Blue cut the foothold account before red planted anything: a clean prevention.
+    # The persistence engagement must credit it a blue win, not leave it a draw.
+    state = SimulationState()
+    state.blue_remediate_turn = 4   # red_persistence_planted_turn stays None
+    ref = Referee(state, detect_within_turns=3, objective="persistence")
+    assert ref.resolve_outcome() == "blue"
+
+
+def test_persistence_remediation_after_plant_is_not_a_prevention_win():
+    # A plant (task/service) survives an account lock, so remediating AFTER red
+    # planted is not prevention — blue must evict. Must not resolve as a blue win.
+    state = SimulationState()
+    state.red_persistence_planted_turn = 3
+    state.blue_remediate_turn = 5
+    ref = Referee(state, detect_within_turns=3, objective="persistence")
+    assert ref.resolve_outcome() is None
+
+
 def test_persistence_blue_eviction_ends_it_as_blue_win():
     state = SimulationState()
     state.red_access_turn = 3

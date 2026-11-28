@@ -93,6 +93,19 @@ class Referee:
             if self.state.blue_persistence_removed_turn is not None:
                 self.state.blue_victory = True
                 return "blue"
+            # Prevention: blue cut the foothold (account lock or IP block) and red
+            # never planted — there is nothing to evict, so the cut IS the win. Once
+            # a plant lands it survives an account lock (a task/service keeps running),
+            # so after-plant remediation is NOT prevention and falls through to the
+            # eviction-only path above.
+            prevent = min(
+                [t for t in (self.state.blue_contain_turn,
+                             self.state.blue_remediate_turn) if t is not None],
+                default=None,
+            )
+            if prevent is not None and self.state.red_persistence_planted_turn is None:
+                self.state.blue_victory = True
+                return "blue"
             return None
 
         access = self.state.red_access_turn
