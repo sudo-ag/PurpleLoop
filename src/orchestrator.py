@@ -77,6 +77,14 @@ def dedupe_lessons(lessons: List[str],
 # lead; the rest give context. Blue is nudged toward the first tool it has not
 # run yet, which stops the 3B model from repeating one tool every turn.
 
+# A red target command shaped like a persistence plant (any class). Its output may
+# carry no "...created" signal (Startup drop, Run key), so this triggers the
+# baseline-diff that actually confirms a new autostart entry.
+_WIN_PLANT_CMD = re.compile(
+    r"schtasks|sc\s+create|reg\s+add|New-Item|Copy-Item|Set-Content|Out-File|\bcopy\b|Startup",
+    re.IGNORECASE)
+
+
 @dataclass
 class SimulationState:
     turn: int = 0
@@ -506,11 +514,21 @@ class Orchestrator:
         if ex is None or getattr(ex, "transport", None) != "winrm":
             return
         turn = self.state.turn
-        if role == "red" and self._check_red_persistence_planted(tool_call, output):
-            baseline = getattr(ex, "_win_persist_baseline", None)
-            ok, new = ex._diff_baseline(baseline, ex._list_win_persistence())
-            if ok and new:
-                self.state.record_plant(new, turn)
+        if role == "red":
+            name = tool_call.get("function", {}).get("name", "")
+            command = str(tool_call.get("function", {}).get("arguments", {}).get("command", ""))
+            # Record on EITHER a task/service creation signal (from output) OR a
+            # persistence-shaped target command. The latter covers Startup drops and
+            # Run keys whose command output carries no "...created" signal — their
+            # only proof is the new entry in the baseline-diff below. A persistence-
+            # shaped command that creates nothing (denied) still records nothing,
+            # because the diff is empty.
+            if (self._check_red_persistence_planted(tool_call, output)
+                    or (name == "execute_command" and _WIN_PLANT_CMD.search(command))):
+                baseline = getattr(ex, "_win_persist_baseline", None)
+                ok, new = ex._diff_baseline(baseline, ex._list_win_persistence())
+                if ok and new:
+                    self.state.record_plant(new, turn)
         if role == "blue":
             try:
                 data = json.loads(output)
@@ -919,6 +937,16 @@ class Orchestrator:
     def _executor_supports(executor: Any, name: str) -> bool:
         return hasattr(executor, name) and callable(getattr(executor, name))
 
+    def _persistence_episode_winner(self, in_loop_winner: Optional[str]) -> Optional[str]:
+        """Reconcile an early in-loop winner with the standing-plant horizon verdict.
+        An early PREVENTION blue win (blue cut the foothold before any plant was
+        recorded) stands; otherwise the horizon decides by what's still standing —
+        so a stalled red holding a plant is not handed a premature stall-blue win,
+        and a prevention win is not lost when blue never swept persistence."""
+        if in_loop_winner == "blue" and not self.state.persistence_plants:
+            return "blue"
+        return self.referee.persistence_horizon_winner()
+
     def _cleanup_persistence(self) -> None:
         """Between-episode reset: on a Windows engagement, strip every post-baseline
         autostart entry on blue's executor (which holds the clean baseline), win or
@@ -999,6 +1027,7 @@ class Orchestrator:
         # 2. Knowledge is owned by the agents: they loaded (and compacted) their
         # own lessons at construction and persist via reflect() below.
 
+        winner = None  # bound even when max_turns == 0, for the persistence verdict
         try:
             for _ in range(max_turns):
                 winner = self.step()
@@ -1033,10 +1062,10 @@ class Orchestrator:
         if blue_lesson:
             print(f"Blue learned: {blue_lesson}")
 
-        # Persistence pursuit: the horizon verdict is decided by what still stands
-        # (the in-memory registry), not the flag-access timing below.
+        # Persistence pursuit: reconcile any early in-loop winner with the horizon
+        # verdict (what still stands in the registry).
         if getattr(self.red_agent, "objective", "root") == "persistence":
-            return self.referee.persistence_horizon_winner()
+            return self._persistence_episode_winner(winner)
 
         # Horizon reached without an in-loop decision. Blue takes precedence
         # (an in-time detection already set blue_victory); otherwise red wins if
