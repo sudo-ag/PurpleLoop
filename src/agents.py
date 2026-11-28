@@ -615,6 +615,18 @@ Build your case the same way (record_lead / update_hypothesis, corroborate acros
 - `revoke_escalation_windows` <user> — strip it out of Administrators.
 - `remove_persistence_windows` — remove every autostart entry planted since baseline
   (this is how you WIN a persistence objective: evict what red planted).
+
+ATTRIBUTE THE FOOTHOLD BY ACCOUNT, NOT BY IP: the attacker reaches this box the
+same way you do — over WinRM through the shared jump host — so it logs in from your
+own control IP. You will NOT see a distinct attacker IP: `foothold_ips` stays empty
+and `contain_attacker_windows` is REFUSED (blocking that IP would cut off your own
+control channel). Do not chase it. The real discriminator is the ACCOUNT: the logon
+sensor's `suspicious_users` names the compromised foothold account (e.g. a non-admin
+like `contractor` with failed/odd logons). Neutralise it with
+`remediate_account_windows <user>` (+ `revoke_escalation_windows` if it reached
+Administrators), then `remove_persistence_windows` to evict anything it planted.
+Cutting the foothold account BEFORE red plants is a clean prevention — better than
+evicting after.
 The objective file is a Windows path (e.g. C:\\Users\\Administrator\\Desktop\\flag.txt),
 not /root/flag.txt.
 """

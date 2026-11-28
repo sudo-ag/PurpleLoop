@@ -270,6 +270,20 @@ def test_windows_addendum_appended_by_role():
     assert "TARGET IS WINDOWS" not in rl.system_prompt
 
 
+def test_windows_blue_doctrine_attributes_foothold_by_account_not_ip():
+    """On WinRM-via-jump, red and blue share the jump source IP, so the attacker
+    has no distinct IP (foothold_ips empty, contain_attacker_windows refused). Blue
+    must attribute by ACCOUNT (suspicious_users) and respond with
+    remediate_account_windows, not chase an IP containment that can't work."""
+    bw = Agent(role="blue", executor=MagicMock(), model="m", windows=True)
+    p = bw.system_prompt
+    assert "suspicious_users" in p
+    assert "shared jump" in p and "control IP" in p  # attacker rides your control IP
+    assert "foothold_ips` stays empty" in p  # so IP containment can't work
+    # steers to account remediation over the futile IP containment
+    assert "remediate_account_windows" in p
+
+
 # --- Windows persistence objective: red plants a task, not an SSH key ----------
 
 def test_objective_met_windows_persistence_credits_task_not_sshkey():
