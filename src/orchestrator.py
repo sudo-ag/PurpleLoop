@@ -621,6 +621,11 @@ class Orchestrator:
         agent = self.get_current_agent()
         role = self.state.current_agent_role
 
+        # Pursuit steer: tell red whether it currently holds a standing plant, so
+        # its phase guidance rotates to a new technique after an eviction.
+        if role == "red":
+            self.red_agent.persistence_standing = bool(self.state.standing_plants())
+
         # Grace window closed? Apply the lock blue staged during it (blue's action,
         # so only on blue's turn — applying on red's turn would preempt its window).
         if role == "blue":

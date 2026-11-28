@@ -318,3 +318,36 @@ def test_handed_windows_red_is_on_target_so_persistence_steer_fires():
     assert red._on_target() is True
     g = red.phase_guidance()
     assert "persistence (WINDOWS)" in g.lower() or "schtasks /create" in g
+
+
+def test_windows_red_repertoire_lists_startup_folder():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True)
+    g = red.phase_guidance()
+    assert "Startup" in g and (".lnk" in g or ".bat" in g)
+
+
+def test_windows_red_steer_rotates_after_eviction():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True)
+    red.persistence_standing = False
+    g = red.phase_guidance()
+    assert "persistence (WINDOWS)" in g
+    assert "different" in g.lower() or "another" in g.lower()  # rotate directive
+    # when a plant stands, red is NOT nagged to re-plant
+    red.persistence_standing = True
+    assert "persistence (WINDOWS)" not in red.phase_guidance()
+
+
+def test_windows_red_steer_gate_is_standing_not_everplanted():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    from src.trajectory import Turn
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True)
+    red.history = [Turn(0, "", None,
+                        "SUCCESS: The scheduled task has successfully been created.")]
+    assert red.objective_met() is True   # ever-planted latches True
+    red.persistence_standing = False     # but blue evicted — nothing stands now
+    assert "persistence (WINDOWS)" in red.phase_guidance()  # steer still fires
