@@ -361,6 +361,8 @@ def build_agents(
     red_model: Optional[str] = None,
     blue_model: Optional[str] = None,
     transport: str = "ssh",
+    red_user: Optional[str] = None,
+    red_pwd: Optional[str] = None,
 ) -> "tuple[Agent, Agent]":
     """Build red/blue once; they are reused across episodes so their experience
     (via knowledge.json) compounds. red_model/blue_model override `model`
@@ -382,8 +384,8 @@ def build_agents(
             # prove it via use_credential; handed red keeps the configured cred.
             red_ex = ToolExecutor(
                 host=host,
-                user="" if earned else user,
-                pwd="" if earned else pwd,
+                user="" if earned else (red_user or user),
+                pwd="" if earned else (red_pwd or pwd),
                 jump_host=jump_host, jump_user=jump_user, jump_pwd=jump_pwd,
                 require_foothold=earned,
                 dojo_exploit_ok=(host != "mock"),
@@ -406,11 +408,14 @@ def build_agents(
         else:
             red_ex = blue_ex
     kp = REPO / "knowledge.json"
+    windows = transport == "winrm"
     red = RedAgent(
         executor=red_ex, model=red_model or model, objective=objective,
         evade=evade, earned=earned, attacker_executor=attacker_ex, knowledge_path=kp,
+        windows=windows,
     )
-    blue = BlueAgent(executor=blue_ex, model=blue_model or model, observe=observe, knowledge_path=kp)
+    blue = BlueAgent(executor=blue_ex, model=blue_model or model, observe=observe,
+                     knowledge_path=kp, windows=windows)
     return red, blue
 
 
@@ -439,6 +444,8 @@ def run_episodes(
     blue_model: Optional[str] = None,
     transport: str = "ssh",
     flag_path: Optional[str] = None,
+    red_user: Optional[str] = None,
+    red_pwd: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run `n` episodes, scoring and persisting each, and return the scorecards
     plus a cross-episode summary. red_model/blue_model override `model` per side."""
@@ -453,7 +460,8 @@ def run_episodes(
     if reset_fn is None and reset and host != "mock":
         reset_fn = scripted_reset
     red, blue = build_agents(host, model, user, pwd, jump_host, jump_user, jump_pwd, evade, earned, observe, objective,
-                             red_model=red_model, blue_model=blue_model, transport=transport)
+                             red_model=red_model, blue_model=blue_model, transport=transport,
+                             red_user=red_user, red_pwd=red_pwd)
     # --narrate: polish each debrief into prose via the driver model (reuses
     # blue's client). None (default) keeps the deterministic, reproducible report.
     polish = make_polish(blue.client, blue.model) if narrate else None
@@ -524,6 +532,11 @@ def main() -> None:
     p.add_argument("--max-turns", type=int, default=20)
     p.add_argument("--user", default="vagrant")
     p.add_argument("--pwd", default="vagrant")
+    p.add_argument("--red-user", default=None,
+                   help="Hand red a DIFFERENT (e.g. low-priv) cred than blue's admin one. "
+                        "Defaults to --user. Lets red start non-admin while blue keeps the "
+                        "admin rights its sensors need.")
+    p.add_argument("--red-pwd", default=None, help="Password for --red-user.")
     p.add_argument("--jump-host", default=None)
     p.add_argument("--jump-user", default="kali")
     p.add_argument("--jump-pwd", default="kali")
@@ -547,7 +560,7 @@ def main() -> None:
         detect_within_turns=a.detect_within_turns, remediate_grace=a.remediate_grace,
         reset=not a.no_reset, narrate=a.narrate, objective=a.objective,
         red_model=a.red_model, blue_model=a.blue_model, transport=a.transport,
-        flag_path=a.flag_path,
+        flag_path=a.flag_path, red_user=a.red_user, red_pwd=a.red_pwd,
     )
 
 

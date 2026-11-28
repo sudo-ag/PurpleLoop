@@ -546,6 +546,80 @@ between calls).
 """
 
 
+# Red has planted durable, MACHINE-WIDE Windows persistence (what blue's sensor can
+# see): a scheduled task or a service creation that succeeded. HKCU Run keys land in
+# the foothold's own hive — invisible to a different-account defender — so they do
+# NOT count as a win here.
+_WIN_PERSIST_PLANTED = re.compile(
+    r"successfully been created|CreateService SUCCESS", re.IGNORECASE)
+
+
+RED_WINDOWS_ADDENDUM = """
+
+TARGET IS WINDOWS — use Windows commands, not Linux ones:
+This engagement's target runs Windows, reached over WinRM, so `execute_command`
+lands in a Windows shell (cmd.exe). The Linux playbook above (find, sudo, SUID,
+/etc/passwd, authorized_keys) does NOT apply. Translate every step to Windows:
+
+1. Enumerate who and where you are:
+   `whoami`  ·  `whoami /priv`  ·  `whoami /groups`  ·  `hostname`  ·  `ipconfig`
+   `net user`  ·  `net localgroup administrators`  ·  `systeminfo`
+2. Find the flag (flag.txt, location UNKNOWN — Desktops, Users, ProgramData, temp):
+   `where /r C:\\ flag.txt`  (slow; narrow if needed)
+   `dir /s /b C:\\Users\\*flag.txt`  ·  check `C:\\Users\\<name>\\Desktop`
+   Read it with `type "<full path>"`.
+3. Look for privilege escalation to SYSTEM/Administrator:
+   - Your privileges: `whoami /priv` (SeImpersonate/SeDebug are strong leads).
+   - Services you can modify or whose binary path is unquoted and writable:
+     `sc query`  ·  `sc qc <svc>`  ·  `wmic service get name,pathname,startmode`.
+   - AlwaysInstallElevated: `reg query HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer`
+     and the HKCU mirror — if both are 1, an MSI runs as SYSTEM.
+   - Scheduled tasks and autoruns you can tamper with: `schtasks /query /fo list /v`.
+4. For a PERSISTENCE objective, plant an autostart that survives a reboot and
+   outlives a password reset — the Windows analogue of an SSH key:
+   - Run key: `reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v <name> /d "<payload>" /f`
+   - Scheduled task: `schtasks /create /tn <name> /tr "<payload>" /sc onlogon /f`
+   - Or a new service: `sc create <name> binPath= "<payload>" start= auto`
+   Whatever you plant is what the defender's persistence sensor diffs against its
+   baseline — a durable, non-obvious entry is the goal.
+
+Rules still hold: read the error and PIVOT, never repeat a failing command, combine
+steps into one command where you can, and be efficient with your turns. To run a
+PowerShell one-liner from cmd: `powershell -NoProfile -Command "<script>"`.
+"""
+
+
+BLUE_WINDOWS_ADDENDUM = """
+
+TARGET IS WINDOWS — investigate and respond with the WINDOWS tools:
+This engagement's target runs Windows. Your Linux sensors (investigate_logs,
+investigate_processes, investigate_persistence, …) are NOT applicable here — they
+return `not_applicable`, which is NOT an all-clear. Call `investigate_environment`
+FIRST to confirm the OS, then work the Windows sensor set:
+
+- HEARTBEAT (time-sensitive — the attacker can act on any turn; re-run these most
+  turns): `investigate_logins_windows` (Security Event Log 4624/4625 — a remote
+  logon from a non-control IP is an earned foothold) and
+  `investigate_file_access_windows` (Event 4663 — confirms a read of the objective
+  file; auditing is armed for you at engagement start).
+- BREADTH (cover once, then rotate back to the heartbeat):
+  `investigate_processes_windows` (reverse shells, C2, sensitive-file access),
+  `investigate_network_windows` (a foreign ESTABLISHED session = active foothold),
+  `investigate_persistence_windows` (a NEW Run key / service / scheduled task since
+  baseline is a planted backdoor — BREACH).
+
+Build your case the same way (record_lead / update_hypothesis, corroborate across
+>=2 sensors before acting). RESPOND with the Windows tools, not the Linux ones:
+- `contain_attacker_windows` <ip> — block the foothold IP at the Windows firewall.
+- `remediate_account_windows` <user> — disable the compromised account + kill it.
+- `revoke_escalation_windows` <user> — strip it out of Administrators.
+- `remove_persistence_windows` — remove every autostart entry planted since baseline
+  (this is how you WIN a persistence objective: evict what red planted).
+The objective file is a Windows path (e.g. C:\\Users\\Administrator\\Desktop\\flag.txt),
+not /root/flag.txt.
+"""
+
+
 BLUE_OBSERVE_ADDENDUM = """
 
 OBSERVATION / TRAINING MODE:
@@ -600,7 +674,7 @@ class Agent:
     # recognizes it; the real value is an instance attribute set in __init__/reset.
     case: "Optional[Dict[str, Any]]" = None
 
-    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None, knowledge_path: "Optional[Any]" = None):
+    def __init__(self, role: str, executor: ToolExecutor, model: str = "llama3.2:latest", experience: List[str] = None, evade: bool = False, earned: bool = False, attacker_executor: Optional[ToolExecutor] = None, observe: bool = False, target: "Optional[Any]" = None, knowledge_path: "Optional[Any]" = None, windows: bool = False):
         self.role = role
         self.executor = executor
         self.model = model
@@ -623,6 +697,13 @@ class Agent:
         # from red's own machine against the target. Only meaningful for red.
         self.attacker_executor = attacker_executor if role.lower() == "red" else None
         self.system_prompt = RED_SYSTEM_PROMPT if role.lower() == "red" else BLUE_SYSTEM_PROMPT
+        # Windows engagement (winrm transport): the base prompts are Linux-shaped,
+        # so append the role's Windows doctrine — red attacks with Windows commands,
+        # blue investigates/responds with the *_windows tools. Known at build time.
+        self.windows = windows
+        if self.windows:
+            self.system_prompt += (RED_WINDOWS_ADDENDUM if role.lower() == "red"
+                                   else BLUE_WINDOWS_ADDENDUM)
         # Red defense-evasion (log tampering) is opt-in so a clean baseline stays
         # reproducible; it only applies to the red operator.
         self.evade = evade and role.lower() == "red"
@@ -1754,9 +1835,12 @@ class RedAgent(Agent):
 
     def objective_met(self) -> bool:
         """Red's campaign is done once it meets its scenario objective. Default
-        (root): it read the flag. Persistence: it planted a surviving SSH-key
-        backdoor (same verified-readback signal the orchestrator credits)."""
+        (root): it read the flag. Persistence: a surviving backdoor — an SSH key on
+        Linux, or a machine-wide autostart (scheduled task / service, which blue's
+        sensor can actually see) on Windows."""
         if self.objective == "persistence":
+            if self.windows:
+                return any(_WIN_PERSIST_PLANTED.search(str(t.output)) for t in self.history)
             return any(re.search(r"ssh-ed25519 [A-Za-z0-9+/]{20,}", str(t.output))
                        for t in self.history)
         return any("flag{" in str(t.output).lower() for t in self.history)
@@ -1857,11 +1941,39 @@ class RedAgent(Agent):
         (the directive only nudges planting). Tighten in the extract phase."""
         if self.has_foothold:
             return True
+        # Handed Windows red holds a working WinRM cred from turn 1 (it never calls
+        # use_credential, and a Windows `whoami` has no `uid=`), so the Linux
+        # readback path below never fires — treat it as on-target directly.
+        if self.windows and not self.earned:
+            return True
         return any("uid=" in str(t.output) for t in self._tool_turns())
 
     def phase_guidance(self) -> str:
         self._update_phase()
         if self.objective == "persistence" and self._on_target() and not self.objective_met():
+            if self.windows:
+                # Windows persistence is the WIN, NOT the flag. Steer red to plant a
+                # machine-wide autostart (task/service) blue can see — and to STOP
+                # chasing the flag, the exact drift the deepseek-red episode showed.
+                return (
+                    "Red Phase: persistence (WINDOWS). Your goal this engagement is "
+                    "PERSISTENCE, NOT reading the flag. Planting a durable autostart "
+                    "that survives a reboot and a password reset is the WIN — it "
+                    "beats blue's account lock. Do NOT spend turns on the flag or on "
+                    "privilege escalation to read it; plant NOW and keep it:\n"
+                    "- Preferred (durable AND machine-wide, so it is the real win): a "
+                    "scheduled task or a service:\n"
+                    "  `schtasks /create /tn <name> /tr \"<payload>\" /sc onlogon /f` "
+                    "then verify with `schtasks /query /tn <name>`\n"
+                    "  or `sc create <name> binPath= \"<payload>\" start= auto`\n"
+                    "- A low-priv foothold may be denied a service or a SYSTEM task; "
+                    "a per-user scheduled task (no `/ru SYSTEM`) still works and is "
+                    "visible.\n"
+                    "- Avoid an HKCU Run key as your ONLY persistence: it lives in "
+                    "your own user hive, so it is weaker and less visible.\n"
+                    "- Once a task or service is created and verified, your objective "
+                    "is MET. Do NOT abandon it to go after the flag."
+                )
             # Persistence is the WIN this engagement, not the flag. Once red holds
             # a foothold, planting a surviving key is the objective — a password
             # lock won't evict a pubkey, so it beats blue's account response.

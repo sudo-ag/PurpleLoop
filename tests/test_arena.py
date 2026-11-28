@@ -232,3 +232,29 @@ def test_build_agents_winrm_transport_selects_winrm_executor():
     assert blue.executor.jump_host == "192.168.64.11"
     red2, blue2 = build_agents(*_ARGS, evade=False, earned=True, observe=False)
     assert blue2.executor.transport == "ssh"
+
+
+def test_build_agents_winrm_adds_windows_doctrine():
+    from src.arena import build_agents
+    red, blue = build_agents("mock", "m", "u", "p", None, "k", "k",
+                             False, False, False, transport="winrm")
+    assert "TARGET IS WINDOWS" in red.system_prompt
+    assert "investigate_logins_windows" in blue.system_prompt
+    red2, blue2 = build_agents("mock", "m", "u", "p", None, "k", "k",
+                               False, False, False, transport="ssh")
+    assert "TARGET IS WINDOWS" not in red2.system_prompt
+    assert "investigate_logins_windows" not in blue2.system_prompt
+
+
+def test_build_agents_separate_red_cred_on_winrm():
+    from src.arena import build_agents
+    red, blue = build_agents("192.168.64.17", "m", "vagrant", "vagrant",
+                             "192.168.64.11", "kali", "kali", False, False, False,
+                             transport="winrm", red_user="contractor", red_pwd="pw")
+    assert red.executor.user == "contractor"   # red is the low-priv foothold
+    assert blue.executor.user == "vagrant"     # blue keeps admin
+    # default: red falls back to the shared cred
+    red2, _ = build_agents("192.168.64.17", "m", "vagrant", "vagrant",
+                           "192.168.64.11", "kali", "kali", False, False, False,
+                           transport="winrm")
+    assert red2.executor.user == "vagrant"

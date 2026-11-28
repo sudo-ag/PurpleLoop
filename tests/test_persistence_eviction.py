@@ -32,3 +32,25 @@ def test_removed_true_sets_eviction_turn():
 def test_removed_false_does_not_set_eviction_turn():
     orch = _blue_step(removed=False)
     assert orch.state.blue_persistence_removed_turn is None
+
+
+# --- Windows persistence scoring: credit task/service plant + windows eviction --
+
+def _orch():
+    return Orchestrator(MagicMock(), MagicMock(), max_tools_per_turn=1)
+
+
+def test_red_windows_task_plant_credits_on_target():
+    o = _orch()
+    out = 'SUCCESS: The scheduled task "Svc" has successfully been created.'
+    assert o._check_red_persistence_planted(_tool("execute_command"), out) is True
+    # off-target (run_on_attacker) with a Windows signal does NOT credit
+    assert o._check_red_persistence_planted(_tool("run_on_attacker"), out) is False
+
+
+def test_blue_remove_persistence_windows_credits_eviction():
+    o = _orch()
+    yes = json.dumps({"tool": "remove_persistence_windows", "removed_entries": ["task|Svc"]})
+    no = json.dumps({"tool": "remove_persistence_windows", "removed_entries": []})
+    assert o._check_blue_persistence_removed(yes) is True
+    assert o._check_blue_persistence_removed(no) is False

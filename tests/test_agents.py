@@ -255,3 +255,52 @@ def test_windows_account_tools_dispatch():
     ex.remediate_account_windows.assert_called_once_with("foothold")
     blue.process_tool_call({"function": {"name": "revoke_escalation_windows", "arguments": {"user": "foothold"}}})
     ex.revoke_escalation_windows.assert_called_once_with("foothold")
+
+
+# --- Windows prompt doctrine appended only on a winrm engagement ---------------
+
+def test_windows_addendum_appended_by_role():
+    rw = Agent(role="red", executor=MagicMock(), model="m", windows=True)
+    assert "TARGET IS WINDOWS" in rw.system_prompt and "where /r" in rw.system_prompt
+    bw = Agent(role="blue", executor=MagicMock(), model="m", windows=True)
+    assert "investigate_logins_windows" in bw.system_prompt
+    assert "remove_persistence_windows" in bw.system_prompt
+    # Linux engagement: no Windows doctrine
+    rl = Agent(role="red", executor=MagicMock(), model="m")
+    assert "TARGET IS WINDOWS" not in rl.system_prompt
+
+
+# --- Windows persistence objective: red plants a task, not an SSH key ----------
+
+def test_objective_met_windows_persistence_credits_task_not_sshkey():
+    from src.agents import RedAgent
+    from src.trajectory import Turn
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True)
+    red.history = [Turn(0, "", None, "SUCCESS: The scheduled task \"Svc\" has successfully been created.")]
+    assert red.objective_met() is True
+    # an SSH key does NOT satisfy a Windows persistence objective
+    red.history = [Turn(0, "", None, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabcdefghij")]
+    assert red.objective_met() is False
+
+
+def test_phase_guidance_windows_persistence_steers_to_task_not_flag():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True)
+    red.has_foothold = True  # _on_target() -> True
+    g = red.phase_guidance()
+    assert "PERSISTENCE" in g and "schtasks /create" in g
+    assert "NOT reading the flag" in g
+    assert "ssh-ed25519" not in g and "authorized_keys" not in g
+
+
+def test_handed_windows_red_is_on_target_so_persistence_steer_fires():
+    from src.agents import RedAgent
+    from src.mock_executor import MockExecutor
+    # handed (earned=False) winrm red: no use_credential, no uid= readback, but it
+    # holds a working cred -> must be on-target so the persistence steer fires.
+    red = RedAgent(executor=MockExecutor(), objective="persistence", windows=True, earned=False)
+    assert red._on_target() is True
+    g = red.phase_guidance()
+    assert "persistence (WINDOWS)" in g.lower() or "schtasks /create" in g
